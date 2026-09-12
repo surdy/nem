@@ -21,6 +21,7 @@ Flutter, iOS + Android, one person on two devices.
 | [0007](./docs/adr/0007-missed-occurrences-collapse.md) | Missed occurrences collapse; due date pins to the earliest missed |
 | [0008](./docs/adr/0008-a-tag-identifies-a-target-not-a-task.md) | A tag identifies a target, not a task |
 | [0009](./docs/adr/0009-custom-uri-scheme-forgoing-ios-background-scanning.md) | Custom URI scheme on tags, forgoing iOS background scanning |
+| [0010](./docs/adr/0010-recurrence-expands-in-floating-wall-clock-time.md) | Recurrence expands in floating wall-clock time, resolved per occurrence |
 
 Settled without an ADR, because each is either obvious or cheap to reverse:
 Flutter as the stack, iOS + Android as targets, the daily digest plus per-task
@@ -185,11 +186,17 @@ upload queue, per-task reminder times, history and streaks, snooze, archive.
 Not yet challenged. Flag any and I'll change it before P1.
 
 1. Auth is email magic link — no password, no anonymous-plus-device-code flow.
-2. State management is Riverpod.
-3. Fixed schedules expand in device-local time; completions stored UTC.
-4. The iOS 64-pending-notification cap is handled by a rolling window: one
-   repeating digest plus per-task reminders for ~30 days, re-topped on
-   foreground.
+2. State management is Riverpod 3, using manual providers rather than
+   `@riverpod` codegen — Riverpod 3 reversed its own guidance and now
+   recommends codegen only when build_runner is already in play.
+3. Fixed schedules expand as floating wall-clock times and are resolved to an
+   instant per occurrence against a stored IANA zone id; completions stored
+   UTC. See ADR 0010.
+4. The iOS 64-pending-notification cap is handled by a rolling window, re-topped
+   on foreground and verified against `pendingNotificationRequests().length`.
+   Where a schedule maps onto `matchDateTimeComponents` (a plain weekly or
+   monthly time), one OS-level repeating notification is used instead of
+   expanding the rule into many — one slot rather than fifty-two.
 5. Blank tags are NTAG215/216.
 6. No widget, no watch app, no Siri or Assistant integration in any phase.
 

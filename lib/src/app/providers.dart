@@ -5,6 +5,7 @@ import 'package:timezone/timezone.dart' as tz;
 import '../data/binding_repository.dart';
 import '../data/database.dart';
 import '../data/digest_settings_repository.dart';
+import '../data/scan_repeat_repository.dart';
 import '../data/target_repository.dart';
 import '../data/task_repository.dart';
 import '../domain/binding.dart';
@@ -16,7 +17,9 @@ import '../domain/scan.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
 import '../nfc/nfc_tag_gateway.dart';
+import '../nfc/platform_tag_launch.dart';
 import '../nfc/tag_gateway.dart';
+import '../nfc/tag_launch.dart';
 import '../notifications/digest_notifier.dart';
 import '../notifications/digest_scheduler.dart';
 import '../notifications/local_digest_notifier.dart';
@@ -98,11 +101,21 @@ final targetBindingsProvider = StreamProvider.family<List<Binding>, String>(
       ref.watch(bindingRepositoryProvider).watchBindingsForTarget(targetId),
 );
 
+/// Where the repeat window's anchor is kept between processes.
+///
+/// Device-local key/value state in `sync_state`, which is why this needs no
+/// schema change — see [ScanRepeatRepository].
+final scanRepeatStoreProvider = Provider<ScanRepeatStore>(
+  (ref) => ScanRepeatRepository(ref.watch(databaseProvider)),
+);
+
 /// The scan resolution flow (PLAN.md — Resolution).
 ///
 /// One instance for the life of the app, which matters: the thirty-second
 /// repeat window is state it holds, and a resolver rebuilt per scan screen
-/// would forget that the same target was just scanned.
+/// would forget that the same target was just scanned. It is also state that
+/// has to outlive the app itself now that a tag can launch it from closed
+/// (#9), which is what the store is for.
 final scanResolverProvider = Provider<ScanResolver>(
   (ref) => ScanResolver(
     RepositoryScanLookup(
@@ -110,6 +123,7 @@ final scanResolverProvider = Provider<ScanResolver>(
       targets: ref.watch(targetRepositoryProvider),
       tasks: ref.watch(taskRepositoryProvider),
     ),
+    repeats: ref.watch(scanRepeatStoreProvider),
   ),
 );
 
@@ -119,6 +133,17 @@ final scanResolverProvider = Provider<ScanResolver>(
 /// in every test, so writing a tag, a tag too small to hold nem's URI and a
 /// phone with no NFC in it are all exercised on a machine with no NFC in it.
 final tagGatewayProvider = Provider<TagGateway>((ref) => NfcTagGateway());
+
+/// Tags tapped while nem was closed or in the background (#9).
+///
+/// A separate seam from [tagGatewayProvider] on purpose: nothing about a launch
+/// goes through the plugin, or through an NFC session at all — the OS read the
+/// tag and handed nem a URI through Android's intent system.
+final tagLaunchGatewayProvider = Provider<TagLaunchGateway>((ref) {
+  final gateway = PlatformTagLaunchGateway();
+  ref.onDispose(gateway.dispose);
+  return gateway;
+});
 
 /// One task, live, or null once it is gone.
 final taskProvider = StreamProvider.family<Task?, String>(

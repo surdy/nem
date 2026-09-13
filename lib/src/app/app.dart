@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../notifications/local_reminder_notifier.dart';
 import '../ui/home_shell.dart';
+import '../ui/tag_launch_host.dart';
 import '../ui/task_detail_screen.dart';
 import 'clock.dart';
 import 'providers.dart';
@@ -114,7 +115,10 @@ class _NemAppState extends ConsumerState<NemApp> {
         brightness: Brightness.dark,
         useMaterial3: true,
       ),
-      home: const HomeShell(),
+      // Wrapped rather than routed to: a tag tapped while nem is closed or in
+      // the background resolves into whatever is already on screen (#9), and
+      // the host is what gives that resolution a navigator to present into.
+      home: const TagLaunchHost(child: HomeShell()),
     );
   }
 }

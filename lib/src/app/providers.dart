@@ -2,13 +2,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:timezone/timezone.dart' as tz;
 
 import '../data/database.dart';
+import '../data/digest_settings_repository.dart';
 import '../data/target_repository.dart';
 import '../data/task_repository.dart';
 import '../domain/completion.dart';
 import '../domain/completion_history.dart';
+import '../domain/digest.dart';
 import '../domain/due_list.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
+import '../notifications/digest_notifier.dart';
+import '../notifications/digest_scheduler.dart';
+import '../notifications/local_digest_notifier.dart';
+import 'app.dart';
 
 /// Manual providers throughout — Riverpod 3 recommends `@riverpod` codegen only
 /// where build_runner is already earning its keep elsewhere (PLAN.md,
@@ -106,3 +112,32 @@ final nowProvider = Provider<DateTime>((ref) => DateTime.now());
 /// at authoring time rather than every time a due date is computed — a task
 /// created in London stays a London task after the phone lands in Tokyo.
 final zoneIdProvider = Provider<String>((ref) => tz.local.name);
+
+final digestSettingsRepositoryProvider = Provider<DigestSettingsRepository>(
+  (ref) => DigestSettingsRepository(ref.watch(databaseProvider)),
+);
+
+/// The one place the notification plugin is reached from. Overridden with a
+/// fake in tests, which is the whole point of the seam.
+final digestNotifierProvider = Provider<DigestNotifier>(
+  (ref) => LocalDigestNotifier(onTapped: (_) => showDueList()),
+);
+
+final digestSchedulerProvider = Provider<DigestScheduler>(
+  (ref) => DigestScheduler(
+    notifier: ref.watch(digestNotifierProvider),
+    settings: ref.watch(digestSettingsRepositoryProvider),
+    tasks: ref.watch(taskRepositoryProvider),
+  ),
+);
+
+/// The stored digest configuration. Invalidated after every write so the
+/// settings screen and the scheduler read the same thing.
+final digestSettingsProvider = FutureProvider<DigestSettings>(
+  (ref) => ref.watch(digestSettingsRepositoryProvider).read(),
+);
+
+/// What the OS currently allows, read without prompting.
+final digestPermissionProvider = FutureProvider<NotificationPermission>(
+  (ref) => ref.watch(digestNotifierProvider).permission(),
+);

@@ -6,6 +6,7 @@ import '../domain/due_list.dart';
 import '../domain/due_status.dart';
 import '../domain/task.dart';
 import 'create_task_screen.dart';
+import 'settings_screen.dart';
 import 'task_detail_screen.dart';
 
 /// The home screen: everything due, grouped Overdue → Today → Soon.
@@ -17,7 +18,18 @@ class DueListScreen extends ConsumerWidget {
     final sections = ref.watch(dueSectionsProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Due')),
+      appBar: AppBar(
+        title: const Text('Due'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Settings',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+            ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => Navigator.of(context).push(
           MaterialPageRoute<void>(builder: (_) => const CreateTaskScreen()),

@@ -116,8 +116,12 @@ five offline edits to one row cost one entry.
 _Avoid_: queue, pending changes, journal
 
 **Cursor**:
-How far a table's pull has reached, as the last `(updated_at, id)` pair seen.
-The id is part of it because two rows can share a timestamp.
+How far a table's pull has reached, as the last `(updated_at, id)` pair it
+**applied** — not the last it read. The distinction is load-bearing: clocks come
+from the writing device, so a phone that was offline pushes rows stamped in the
+past, and a cursor advanced over rows it merely read would step over a peer's
+unseen work and lose it. The id is part of the pair because two rows can share a
+timestamp.
 _Avoid_: watermark, offset, checkpoint, last sync
 
 **Seed**:

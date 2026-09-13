@@ -177,24 +177,46 @@ void main() {
 
   group('parsing a scanned code', () {
     test('a nem URI off the camera is a label', () {
-      final code = ScannedCode.parse('nem://t/abc', ScanCarrier.camera);
+      final code = ScannedCode.parse('nem://t/abc', ScanReader.camera);
       expect(code.kind, BindingKind.label);
       expect(code.value, 'abc');
       expect(code.isScanUri, isTrue);
     });
 
     test('anything else off the camera is a barcode, kept raw', () {
-      final code = ScannedCode.parse(' 5010358210016 ', ScanCarrier.camera);
+      final code = ScannedCode.parse(' 5010358210016 ', ScanReader.camera);
       expect(code.kind, BindingKind.barcode);
       expect(code.value, '5010358210016');
       expect(code.isScanUri, isFalse);
     });
 
-    test('the same URI off NFC is a tag — only the carrier tells them '
+    test('the same URI off NFC is a tag — only the reader tells them '
         'apart', () {
-      final code = ScannedCode.parse('nem://t/abc', ScanCarrier.nfc);
+      final code = ScannedCode.parse('nem://t/abc', ScanReader.nfc);
       expect(code.kind, BindingKind.tag);
       expect(code.value, 'abc');
+    });
+
+    test('a UPC-A parses to one value whichever platform read it', () {
+      // Android reports the twelve digits printed under the bars; iOS, which
+      // has no UPC-A symbology, reports the same code as an EAN-13 with a
+      // leading zero. Both have to reach the same binding.
+      final android = ScannedCode.parse('036000291452', ScanReader.camera);
+      final ios = ScannedCode.parse('0036000291452', ScanReader.camera);
+
+      expect(android.kind, BindingKind.barcode);
+      expect(ios.kind, BindingKind.barcode);
+      expect(ios.value, android.value);
+      expect(android.value, '036000291452');
+      // The raw read is kept as it arrived, so nothing has been lost.
+      expect(ios.raw, '0036000291452');
+    });
+
+    test('a tag\'s own payload is not canonicalised — nothing reads it '
+        'twice', () {
+      final code = ScannedCode.parse('0036000291452', ScanReader.nfc);
+      expect(code.kind, BindingKind.tag);
+      expect(code.value, '0036000291452');
     });
 
     test('each kind carries the completion source it records', () {
@@ -327,6 +349,28 @@ void main() {
       expect(unknown.code.value, '5010358210016');
     });
 
+    test('a barcode bound on one platform resolves off the other', () async {
+      // Bound from an Android phone, scanned here as an iPhone reports it.
+      lookup.bindings = [
+        _binding(
+          targetId: boiler.id,
+          kind: BindingKind.barcode,
+          value: '036000291452',
+        ),
+      ];
+      lookup.tasks = [
+        _task(id: 'a', title: 'Change it', targetId: boiler.id, dueInDays: -2),
+      ];
+
+      final outcome = await resolver.resolve('0036000291452', now: _epoch);
+
+      expect(outcome, isA<ScanOneTaskDue>());
+      final one = outcome as ScanOneTaskDue;
+      expect(one.target.id, boiler.id);
+      // And the completion it leads to is sourced to the barcode.
+      expect(one.code.kind.completionSource, CompletionSource.barcode);
+    });
+
     test('a nem URI nobody bound is also unknown — resolution goes through '
         'the bindings table', () async {
       final outcome = await resolver.resolve(
@@ -350,11 +394,11 @@ void main() {
       expect(outcome, isA<ScanUnknownCode>());
     });
 
-    test('the binding is looked up under the carrier\'s kind', () async {
+    test('the binding is looked up under the reader\'s kind', () async {
       await resolver.resolve(labelUriFor(boiler.id), now: _epoch);
       await resolver.resolve(
         labelUriFor(boiler.id),
-        carrier: ScanCarrier.nfc,
+        reader: ScanReader.nfc,
         now: _epoch.add(const Duration(minutes: 1)),
       );
 

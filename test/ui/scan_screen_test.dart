@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:nem/src/app/clock.dart';
 import 'package:nem/src/app/providers.dart';
 import 'package:nem/src/data/binding_repository.dart';
@@ -274,6 +275,41 @@ void main() {
     await unmount(tester);
   });
 
+  testWidgets('an unrecognised code can make the target it binds to', (
+    tester,
+  ) async {
+    // A barcode on a product is usually scanned before anybody has thought to
+    // create the thing it is stuck to, and sending them away to the targets
+    // screen would mean scanning it twice.
+    await pumpScan(tester);
+    scan('5010358210016');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('bind-to-new')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('new-target-name')),
+      'The water filter',
+    );
+    await tester.tap(find.byKey(const ValueKey('create-target')));
+    await tester.pumpAndSettle();
+
+    final created = (await targets.allTargets()).firstWhere(
+      (target) => target.name == 'The water filter',
+    );
+    final binding = await bindings.findBinding(
+      BindingKind.barcode,
+      '5010358210016',
+    );
+    expect(binding?.targetId, created.id);
+    expect(
+      find.textContaining('Barcode bound to The water filter'),
+      findsOneWidget,
+    );
+
+    await unmount(tester);
+  });
+
   testWidgets('a label nobody bound is unrecognised too', (tester) async {
     await pumpScan(tester);
     scan(labelUriFor(boiler.id));
@@ -328,7 +364,7 @@ void main() {
       final completions = await completionsOf('Bleed the radiators');
       expect(completions.length, 1);
       // The criterion: a completion recorded off a tag says so, and the only
-      // thing that could have told it is the carrier the screen passed in.
+      // thing that could have told it is the reader the screen passed in.
       expect(completions.single.source, CompletionSource.tag);
       expect(haptics, isNotEmpty);
       expect(
@@ -345,7 +381,7 @@ void main() {
       tester,
     ) async {
       // `nem://t/<uuid>` is byte-identical on a tag and on a printed label
-      // (ADR 0009), and the carrier is the only thing that separates them. A
+      // (ADR 0009), and the reader is the only thing that separates them. A
       // boiler that has only ever been labelled has no tag bound, so a tag
       // carrying its URI is a code nem does not know yet.
       await labelTheBoiler();
@@ -470,6 +506,170 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(tags.reading, isFalse);
+      await unmount(tester);
+    });
+  });
+
+  group('barcodes', () {
+    /// A product code already printed on the boiler's filter box.
+    Future<void> barcodeTheBoiler([String value = '5010358210016']) => bindings
+        .bind(targetId: boiler.id, kind: BindingKind.barcode, value: value);
+
+    test('the camera asks for the product symbologies #10 lists, and for '
+        'ean13 whatever else it asks for', () {
+      expect(
+        scanFormats,
+        containsAll(<BarcodeFormat>[
+          BarcodeFormat.ean8,
+          BarcodeFormat.ean13,
+          BarcodeFormat.upcA,
+          BarcodeFormat.upcE,
+          BarcodeFormat.code128,
+        ]),
+      );
+      // Apple's Vision framework has no UPC-A symbology: asking for `upcA`
+      // alone finds nothing on an iPhone, and reports no error either. UPC-A
+      // arrives there as an EAN-13, so `ean13` is what makes it detectable at
+      // all — the criterion the issue's comment amended.
+      expect(scanFormats, contains(BarcodeFormat.ean13));
+      // And nem's own labels still have to scan.
+      expect(scanFormats, contains(BarcodeFormat.qrCode));
+    });
+
+    testWidgets('a bound barcode resolves through the same flow as a label, '
+        'and its completion is sourced to the barcode', (tester) async {
+      await barcodeTheBoiler();
+      await overdueTask('Change the filter');
+
+      await pumpScan(tester);
+      scan('5010358210016');
+      await tester.pumpAndSettle();
+
+      final completions = await completionsOf('Change the filter');
+      expect(completions.length, 1);
+      expect(completions.single.source, CompletionSource.barcode);
+      expect(haptics, isNotEmpty);
+      expect(
+        find.text('Completed Change the filter at The boiler'),
+        findsOneWidget,
+      );
+
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      await unmount(tester);
+    });
+
+    testWidgets('two due at a barcode are listed, and each tick is sourced to '
+        'the barcode', (tester) async {
+      await barcodeTheBoiler();
+      await overdueTask('Change the filter');
+      await overdueTask('Descale it');
+
+      await pumpScan(tester);
+      scan('5010358210016');
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Descale it'));
+      await tester.pumpAndSettle();
+      expect(
+        (await completionsOf('Descale it')).single.source,
+        CompletionSource.barcode,
+      );
+
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+      await unmount(tester);
+    });
+
+    testWidgets('a barcode bound on Android resolves off an iPhone, which '
+        'reads the same UPC-A as an EAN-13', (tester) async {
+      // MLKit reports the twelve digits under the bars; Vision has no UPC-A
+      // and reports them behind a leading zero. Without canonicalisation the
+      // second string simply would not find the first one's binding.
+      await barcodeTheBoiler('036000291452');
+      await overdueTask('Change the filter');
+
+      await pumpScan(tester);
+      scan('0036000291452');
+      await tester.pumpAndSettle();
+
+      expect(
+        (await completionsOf('Change the filter')).single.source,
+        CompletionSource.barcode,
+      );
+
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      await unmount(tester);
+    });
+
+    testWidgets('and the other way round: bound off an iPhone, scanned on '
+        'Android', (tester) async {
+      await pumpScan(tester);
+      // Bound here as iOS reads it, which stores the canonical twelve digits.
+      scan('0036000291452');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(ValueKey('bind-to-${boiler.id}')));
+      await tester.pumpAndSettle();
+
+      expect(
+        (await bindings.findBinding(
+          BindingKind.barcode,
+          '036000291452',
+        ))?.targetId,
+        boiler.id,
+      );
+
+      await overdueTask('Change the filter');
+      clock = clock.add(const Duration(minutes: 1));
+      // And read on Android, where the same box gives twelve digits.
+      scan('036000291452');
+      await tester.pumpAndSettle();
+
+      expect(
+        (await completionsOf('Change the filter')).single.source,
+        CompletionSource.barcode,
+      );
+
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      await unmount(tester);
+    });
+
+    testWidgets('a barcode claimed while the sheet was open is refused rather '
+        'than taken over', (tester) async {
+      await pumpScan(tester);
+      scan('5010358210016');
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Bind 5010358210016'), findsOneWidget);
+
+      // The other half of a sync pull, or the same box bound from another
+      // screen: between the sheet opening and the tap, the code became the
+      // front door's.
+      final door = await targets.createTarget(name: 'The front door');
+      await bindings.bind(
+        targetId: door.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(ValueKey('bind-to-${boiler.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('bind-refused')), findsOneWidget);
+      expect(
+        find.textContaining('already bound to The front door'),
+        findsOneWidget,
+      );
+      expect(
+        (await bindings.findBinding(
+          BindingKind.barcode,
+          '5010358210016',
+        ))?.targetId,
+        door.id,
+      );
+
       await unmount(tester);
     });
   });

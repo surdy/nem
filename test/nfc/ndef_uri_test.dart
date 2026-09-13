@@ -58,7 +58,7 @@ void main() {
 
     test('writes the URI a label encodes, byte for byte', () {
       // ADR 0009: the tag and the printed label carry the same string, which is
-      // exactly why the resolver cannot tell them apart and the carrier has to
+      // exactly why the resolver cannot tell them apart and the reader has to
       // be passed in.
       const targetId = '2a1f7c58-8c2e-4a3b-9f10-0a1b2c3d4e5f';
       expect(uriFromNdefMessage(ndefUriMessage(labelUriFor(targetId))), uri);

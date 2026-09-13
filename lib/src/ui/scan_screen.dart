@@ -7,10 +7,12 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../app/clock.dart';
 import '../app/providers.dart';
+import '../domain/barcode.dart';
 import '../domain/completion.dart';
 import '../domain/scan.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
+import '../data/binding_repository.dart';
 import '../nfc/tag_gateway.dart';
 import 'due_list_screen.dart' show formatDueDate;
 import 'target_detail_screen.dart';
@@ -28,6 +30,28 @@ typedef ScanPreviewBuilder =
 /// something. The same five seconds the due list offers.
 const scanUndoWindow = Duration(seconds: 5);
 
+/// The symbologies the camera is asked for.
+///
+/// QR is nem's own label (ADR 0009). The rest are #10's list of product codes —
+/// EAN-8, EAN-13, UPC-A, UPC-E and Code 128 — and `ean13` is load-bearing twice
+/// over. It is a symbology in its own right, and it is also the only way UPC-A
+/// is seen at all on iOS: Apple's Vision framework has no UPC-A, so asking for
+/// `upcA` alone finds nothing there and says nothing about it. The twelve
+/// digits arrive as an EAN-13 with a leading zero instead, which
+/// [normalisedBarcode] takes back off so that both phones bind the same string.
+///
+/// Restricting the list rather than leaving it open is deliberate: every extra
+/// symbology is work done on every frame, and a code nem cannot bind is not
+/// worth slowing down the one it can.
+const scanFormats = <BarcodeFormat>[
+  BarcodeFormat.qrCode,
+  BarcodeFormat.ean8,
+  BarcodeFormat.ean13,
+  BarcodeFormat.upcA,
+  BarcodeFormat.upcE,
+  BarcodeFormat.code128,
+];
+
 /// The scan screen: point at a label or hold a tag against the phone, and the
 /// work due there gets done.
 ///
@@ -35,8 +59,8 @@ const scanUndoWindow = Duration(seconds: 5);
 /// camera, the NFC session, the haptic and the toast; what a scanned string
 /// *means* is [ScanResolver]'s answer, and this widget only carries out the
 /// outcome it is handed (PLAN.md — Resolution). Both readers hand their string
-/// to the same resolver and differ in one argument, the [ScanCarrier] — which
-/// is the only thing that can say a `nem://t/<uuid>` came off a tag rather than
+/// to the same resolver and differ in one argument, the [ScanReader] — which is
+/// the only thing that can say a `nem://t/<uuid>` came off a tag rather than
 /// off a printed label, since the two are byte-identical (ADR 0009).
 class ScanScreen extends ConsumerStatefulWidget {
   const ScanScreen({super.key, this.previewBuilder});
@@ -74,11 +98,11 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     _tags = ref.read(tagGatewayProvider);
     unawaited(_prepareTags());
     if (widget.previewBuilder == null) {
-      // Formats are left open rather than restricted to QR: a product barcode
-      // in front of the camera is a code nem can offer to bind (#10), and
-      // refusing to read it here would be a different screen's problem later.
+      // Labels and product codes both: a barcode in front of the camera is a
+      // code nem can resolve or offer to bind (#10).
       _controller = MobileScannerController(
         detectionSpeed: DetectionSpeed.normal,
+        formats: scanFormats,
       );
     }
     // Raising the camera is a fresh intention: the thirty-second repeat window
@@ -142,7 +166,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
     switch (read) {
       case TagValueRead(:final value):
-        await _onScanned(value, carrier: ScanCarrier.nfc);
+        await _onScanned(value, reader: ScanReader.nfc);
       case TagUnreadable(:final detail):
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
@@ -156,14 +180,14 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
   Future<void> _onScanned(
     String raw, {
-    ScanCarrier carrier = ScanCarrier.camera,
+    ScanReader reader = ScanReader.camera,
   }) async {
     if (_handling) return;
     _handling = true;
     try {
       final outcome = await ref
           .read(scanResolverProvider)
-          .resolve(raw, carrier: carrier, now: ref.read(clockProvider)());
+          .resolve(raw, reader: reader, now: ref.read(clockProvider)());
       if (!mounted) return;
       await _present(outcome);
     } finally {
@@ -479,24 +503,63 @@ class _ScanTasksSheetState extends ConsumerState<_ScanTasksSheet> {
 
 /// The sheet offering to bind an unrecognised code to a target.
 ///
-/// Pops the target it bound to, or null when nothing was chosen.
-class _BindSheet extends ConsumerWidget {
+/// Pops the target it bound to, or null when nothing was chosen. A target can
+/// be made from here: a barcode on a product is usually scanned before anybody
+/// has thought to create the thing it is stuck to, and sending them away to the
+/// targets screen would mean scanning it twice (#10).
+class _BindSheet extends ConsumerStatefulWidget {
   const _BindSheet({required this.code});
 
   final ScannedCode code;
 
-  Future<void> _bind(BuildContext context, WidgetRef ref, Target target) async {
+  @override
+  ConsumerState<_BindSheet> createState() => _BindSheetState();
+}
+
+class _BindSheetState extends ConsumerState<_BindSheet> {
+  /// Why the last attempt did not bind, or null.
+  String? _refusal;
+
+  ScannedCode get code => widget.code;
+
+  Future<void> _bind(Target target) async {
     final navigator = Navigator.of(context);
-    await ref
-        .read(bindingRepositoryProvider)
-        .bind(targetId: target.id, kind: code.kind, value: code.value);
+    try {
+      await ref
+          .read(bindingRepositoryProvider)
+          .bindUnclaimed(
+            targetId: target.id,
+            kind: code.kind,
+            value: code.value,
+          );
+    } on BindingConflict catch (conflict) {
+      // Refused, and the sheet stays up: the code is in their hand and the
+      // next move is theirs.
+      if (mounted) setState(() => _refusal = conflict.message);
+      return;
+    }
     navigator.pop(target);
   }
 
+  /// Names a target, creates it, and binds the code to it in one gesture.
+  Future<void> _bindToNew() async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => const _NewTargetDialog(),
+    );
+    if (name == null || !mounted) return;
+    final target = await ref
+        .read(targetRepositoryProvider)
+        .createTarget(name: name);
+    if (!mounted) return;
+    await _bind(target);
+  }
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final targets = ref.watch(targetListProvider);
+    final refusal = _refusal;
 
     return SafeArea(
       child: Column(
@@ -520,6 +583,23 @@ class _BindSheet extends ConsumerWidget {
               style: theme.textTheme.bodyMedium,
             ),
           ),
+          if (refusal != null)
+            Padding(
+              key: const ValueKey('bind-refused'),
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+              child: Text(
+                refusal,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            ),
+          ListTile(
+            key: const ValueKey('bind-to-new'),
+            leading: const Icon(Icons.add),
+            title: const Text('A new target'),
+            onTap: _bindToNew,
+          ),
           Flexible(
             child: targets.when(
               loading: () => const Padding(
@@ -533,10 +613,7 @@ class _BindSheet extends ConsumerWidget {
               data: (data) => data.isEmpty
                   ? const Padding(
                       padding: EdgeInsets.all(24),
-                      child: Text(
-                        'There are no targets yet. Create one, then scan '
-                        'this code again.',
-                      ),
+                      child: Text('There is nothing else to bind it to yet.'),
                     )
                   : ListView(
                       shrinkWrap: true,
@@ -548,7 +625,7 @@ class _BindSheet extends ConsumerWidget {
                             subtitle: target.description == null
                                 ? null
                                 : Text(target.description!),
-                            onTap: () => _bind(context, ref, target),
+                            onTap: () => _bind(target),
                           ),
                       ],
                     ),
@@ -559,4 +636,59 @@ class _BindSheet extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// Names the target a scanned code is about to create.
+///
+/// A name and nothing else. Everything a target can carry is editable
+/// afterwards, and a form in the way of a barcode already under the camera is a
+/// form nobody wanted.
+class _NewTargetDialog extends StatefulWidget {
+  const _NewTargetDialog();
+
+  @override
+  State<_NewTargetDialog> createState() => _NewTargetDialogState();
+}
+
+class _NewTargetDialogState extends State<_NewTargetDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final name = _controller.text.trim();
+    if (name.isEmpty) return;
+    Navigator.of(context).pop(name);
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('New target'),
+    content: TextField(
+      key: const ValueKey('new-target-name'),
+      controller: _controller,
+      autofocus: true,
+      textCapitalization: TextCapitalization.sentences,
+      decoration: const InputDecoration(
+        labelText: 'Name',
+        hintText: 'The boiler',
+      ),
+      onSubmitted: (_) => _submit(),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        key: const ValueKey('create-target'),
+        onPressed: _submit,
+        child: const Text('Create and bind'),
+      ),
+    ],
+  );
 }

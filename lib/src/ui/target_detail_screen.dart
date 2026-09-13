@@ -7,6 +7,7 @@ import '../domain/due_status.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
 import 'due_list_screen.dart' show formatDueDate;
+import 'target_barcode_screen.dart';
 import 'target_form_screen.dart';
 import 'target_label_screen.dart';
 import 'target_tag_screen.dart';
@@ -34,6 +35,7 @@ class TargetDetailScreen extends ConsumerWidget {
                 _TargetAction.rename => _edit(context, target),
                 _TargetAction.label => _showLabel(context, target),
                 _TargetAction.tag => _writeTag(context, target),
+                _TargetAction.barcode => _bindBarcode(context, target),
                 _TargetAction.delete => _confirmDelete(context, ref, target),
               },
               itemBuilder: (context) => const [
@@ -45,6 +47,10 @@ class TargetDetailScreen extends ConsumerWidget {
                 PopupMenuItem(
                   value: _TargetAction.tag,
                   child: Text('Write a tag'),
+                ),
+                PopupMenuItem(
+                  value: _TargetAction.barcode,
+                  child: Text('Bind a barcode'),
                 ),
                 PopupMenuItem(
                   value: _TargetAction.delete,
@@ -82,6 +88,17 @@ class TargetDetailScreen extends ConsumerWidget {
     );
   }
 
+  /// Adopting a product code that is already printed on the thing (CONTEXT.md
+  /// — "Barcode"). Nothing is written and nothing is printed; the code was
+  /// already there.
+  void _bindBarcode(BuildContext context, Target target) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TargetBarcodeScreen(target: target),
+      ),
+    );
+  }
+
   /// Deleting a target is not deleting its work, and the dialog says so —
   /// otherwise the safe-looking move is to leave dead targets lying around.
   Future<void> _confirmDelete(
@@ -115,7 +132,7 @@ class TargetDetailScreen extends ConsumerWidget {
   }
 }
 
-enum _TargetAction { rename, label, tag, delete }
+enum _TargetAction { rename, label, tag, barcode, delete }
 
 class _TargetBody extends ConsumerWidget {
   const _TargetBody({required this.target});

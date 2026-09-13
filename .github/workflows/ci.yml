@@ -38,3 +38,10 @@ jobs:
 
       - name: Test
         run: flutter test
+
+      # GitHub runners are UTC, which has no daylight saving. Date arithmetic
+      # bugs that only appear in a DST timezone would pass unnoticed otherwise.
+      - name: Test (DST timezone)
+        run: flutter test
+        env:
+          TZ: America/New_York

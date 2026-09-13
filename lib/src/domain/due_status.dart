@@ -45,7 +45,16 @@ String? overdueLabel(DateTime due, DateTime now) {
   return late == 1 ? '1 day late' : '$late days late';
 }
 
+/// The calendar date of [value] in local time, as a UTC midnight.
+///
+/// The UTC part is deliberate and load-bearing. [daysLate] subtracts two of
+/// these and reads `inDays`, and a local-time subtraction spanning a daylight
+/// saving transition is not a whole number of days — a span containing a
+/// spring-forward is 23 hours short, so `inDays` truncates it down by one. That
+/// under-counts lateness for every task whose due date sits on the far side of
+/// the transition, permanently, not just on the day itself. UTC has no such
+/// transitions, so differencing UTC midnights is always an exact day count.
 DateTime _dateOnly(DateTime value) {
   final local = value.isUtc ? value.toLocal() : value;
-  return DateTime(local.year, local.month, local.day);
+  return DateTime.utc(local.year, local.month, local.day);
 }

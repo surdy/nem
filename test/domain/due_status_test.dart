@@ -61,4 +61,43 @@ void main() {
     expect(DueStatus.dueToday.groupHeading, 'Today');
     expect(DueStatus.upcoming.groupHeading, 'Soon');
   });
+
+  // These only exercise the bug when the test process runs in a timezone that
+  // observes DST — CI runs the suite a second time under TZ=America/New_York
+  // for exactly this reason. Under UTC they pass trivially.
+  group('daylight saving transitions', () {
+    // US spring-forward 2026: Sunday 8 March, 02:00 -> 03:00.
+    test('counts whole days across a spring-forward transition', () {
+      expect(
+        daysLate(DateTime(2026, 3, 7, 9), DateTime(2026, 3, 9, 9)),
+        2,
+        reason: 'the 23-hour day must not truncate the count to 1',
+      );
+    });
+
+    test(
+      'a long overdue span containing a transition is not short by a day',
+      () {
+        expect(
+          daysLate(DateTime(2026, 2, 10, 9), DateTime(2026, 3, 12, 9)),
+          30,
+        );
+      },
+    );
+
+    test(
+      'a task one day overdue across a transition is not shown as due today',
+      () {
+        final due = DateTime(2026, 3, 7, 9);
+        final now = DateTime(2026, 3, 9, 9);
+        expect(dueStatusFor(due, now), DueStatus.overdue);
+        expect(overdueLabel(due, now), '2 days late');
+      },
+    );
+
+    // US fall-back 2026: Sunday 1 November, 02:00 -> 01:00.
+    test('counts whole days across an autumn fall-back transition', () {
+      expect(daysLate(DateTime(2026, 10, 31, 9), DateTime(2026, 11, 2, 9)), 2);
+    });
+  });
 }

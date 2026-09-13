@@ -6,6 +6,7 @@ import '../domain/due_list.dart';
 import '../domain/due_status.dart';
 import '../domain/task.dart';
 import 'create_task_screen.dart';
+import 'task_detail_screen.dart';
 
 /// The home screen: everything due, grouped Overdue → Today → Soon.
 class DueListScreen extends ConsumerWidget {
@@ -146,6 +147,13 @@ class _TaskTile extends ConsumerWidget {
               visualDensity: VisualDensity.compact,
             ),
       isThreeLine: task.notes != null,
+      // Tapping the row opens the task's history; the tick stays on the
+      // leading button, so opening it cannot complete anything by accident.
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => TaskDetailScreen(taskId: task.id),
+        ),
+      ),
     );
   }
 }

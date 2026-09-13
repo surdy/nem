@@ -4,6 +4,8 @@ import 'package:timezone/timezone.dart' as tz;
 import '../data/database.dart';
 import '../data/target_repository.dart';
 import '../data/task_repository.dart';
+import '../domain/completion.dart';
+import '../domain/completion_history.dart';
 import '../domain/due_list.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
@@ -59,6 +61,40 @@ final targetTasksProvider = StreamProvider.family<List<Task>, String>(
   (ref, targetId) =>
       ref.watch(taskRepositoryProvider).watchTasksForTarget(targetId),
 );
+
+/// One task, live, or null once it is gone.
+final taskProvider = StreamProvider.family<Task?, String>(
+  (ref, taskId) => ref.watch(taskRepositoryProvider).watchTask(taskId),
+);
+
+/// A task's surviving completions, most recent work first.
+///
+/// The completion log itself — nothing derived, nothing cached (ADR 0004).
+final completionsProvider = StreamProvider.family<List<Completion>, String>(
+  (ref, taskId) =>
+      ref.watch(taskRepositoryProvider).watchCompletionsFor(taskId),
+);
+
+/// A task's history: its completions, the gap between each consecutive pair,
+/// and the trailing-window counts.
+final taskHistoryProvider = Provider.family<AsyncValue<TaskHistory>, String>((
+  ref,
+  taskId,
+) {
+  final now = ref.watch(nowProvider);
+  final task = ref.watch(taskProvider(taskId));
+  final completions = ref.watch(completionsProvider(taskId));
+  return task.when(
+    loading: () => const AsyncValue<TaskHistory>.loading(),
+    error: AsyncValue<TaskHistory>.error,
+    data: (task) => task == null
+        ? const AsyncValue.data(TaskHistory.empty)
+        : completions.whenData(
+            (completions) =>
+                historyFor(task: task, completions: completions, now: now),
+          ),
+  );
+});
 
 /// The current moment, overridable in tests.
 final nowProvider = Provider<DateTime>((ref) => DateTime.now());

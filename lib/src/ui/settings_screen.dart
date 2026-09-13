@@ -4,8 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../app/providers.dart';
 import '../domain/digest.dart';
 import '../notifications/digest_notifier.dart';
+import 'sync_settings_section.dart';
 
-/// Where the digest is switched on and given a time (CONTEXT.md — "Digest").
+/// Where the digest is switched on and given a time (CONTEXT.md — "Digest"),
+/// and where the backend is named and signed into (#11).
 ///
 /// Per-task reminders are a separate setting on the task itself (CONTEXT.md —
 /// "Reminder"), and do not belong on this screen.
@@ -132,6 +134,7 @@ class _DigestSettingsList extends ConsumerWidget {
           trailing: const Icon(Icons.schedule),
         ),
         if (isBlocked) const _PermissionNotice(),
+        const SyncSettingsSection(),
       ],
     );
   }

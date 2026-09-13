@@ -54,6 +54,14 @@ dependencies:
   # `lib/src/nfc/ndef_uri.dart` assembles the record by hand.
   nfc_manager_ndef: ^1.1.0
 
+  # Auth, Postgres and realtime against Supabase (ADR 0002 — spoken to
+  # directly, with no gateway layer in between).
+  #
+  # 2.x, not the 3.0.0-dev prereleases: 2.17.2 is the current stable. Note
+  # `Supabase.initialize` now takes `publishableKey` alongside `anonKey`; nem
+  # passes `anonKey`, which is what a self-hosted instance still issues.
+  supabase_flutter: ^2.17.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

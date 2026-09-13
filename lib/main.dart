@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'src/app/app.dart';
 import 'src/app/providers.dart';
 import 'src/app/time_zones.dart';
+import 'src/sync/sync_providers.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,6 +37,13 @@ Future<void> main() async {
   // of the 64 iOS allows — it only decides which of them sees the other's
   // notifications already pending on this particular launch.
   await container.read(reminderSchedulerProvider).refresh();
+
+  // Pushes anything the outbox is holding and pulls whatever the other device
+  // wrote (#11). Deliberately not awaited: SQLite is the source of truth
+  // (ADR 0001), so nothing on this screen is waiting on a server, and a phone
+  // with no signal — or no account at all — must reach the due list exactly as
+  // fast as one with both.
+  unawaited(container.read(syncStatusProvider.notifier).sync());
 
   runApp(
     UncontrolledProviderScope(container: container, child: const NemApp()),

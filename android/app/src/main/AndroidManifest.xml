@@ -24,6 +24,23 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- Where a magic link comes back to (#11).
+
+                 The same custom scheme the tags carry (ADR 0009) on a host of
+                 its own, so `nem://t/<uuid>` and `nem://login-callback/` cannot
+                 be confused for one another. supabase_flutter listens for this
+                 and completes the PKCE exchange; without it the email link
+                 opens a browser that has nothing to hand the code to.
+
+                 android:host is required — a scheme-only BROWSABLE filter would
+                 claim every `nem://` URI on the device, including the tags. -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="nem" android:host="login-callback"/>
+            </intent-filter>
         </activity>
         <!-- Where a tag tapped while nem is closed or in the background lands
              (#9). It holds no UI: it reads the URI off the dispatch and hands

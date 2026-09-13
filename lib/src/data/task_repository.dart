@@ -8,6 +8,7 @@ import '../domain/reminder.dart';
 import '../domain/schedule.dart';
 import '../domain/snooze.dart';
 import '../domain/task.dart';
+import '../sync/outbox_store.dart';
 import 'database.dart';
 import 'ids.dart';
 
@@ -27,6 +28,16 @@ class TaskRepository {
   TaskRepository(this._db);
 
   final NemDatabase _db;
+
+  /// Every write below that changes what the `tasks` row *says* — as opposed to
+  /// what is derived from it — queues the row for push (#11).
+  ///
+  /// The derived caches are the exception, and deliberately: `due_date` and
+  /// `last_completed_at` are recomputed from the completion log on the far
+  /// device too (ADR 0004), so pushing them would be sending a value that is
+  /// about to be overwritten by arithmetic. They ride along when the row is
+  /// pushed for a real reason and are ignored when it arrives.
+  late final OutboxStore _outbox = OutboxStore(_db);
 
   String? _cachedDeviceId;
 
@@ -192,6 +203,7 @@ class TaskRepository {
             updatedAt: timestamp,
           ),
         );
+    await _outbox.enqueue(_db.tasks.actualTableName, task.id, now: timestamp);
     return task;
   }
 
@@ -240,6 +252,7 @@ class TaskRepository {
             updatedAt: timestamp,
           ),
         );
+    await _outbox.enqueue(_db.tasks.actualTableName, task.id, now: timestamp);
     return task;
   }
 
@@ -261,14 +274,16 @@ class TaskRepository {
     ReminderTime? time, {
     DateTime? now,
   }) async {
+    final timestamp = now ?? DateTime.now();
     await (_db.update(
       _db.tasks,
     )..where((t) => t.id.equals(taskId) & t.deletedAt.isNull())).write(
       TasksCompanion(
         reminderTime: Value(time?.asHhMm),
-        updatedAt: Value(now ?? DateTime.now()),
+        updatedAt: Value(timestamp),
       ),
     );
+    await _outbox.enqueue(_db.tasks.actualTableName, taskId, now: timestamp);
   }
 
   /// Records that a task was performed (CONTEXT.md — "Completion").
@@ -425,19 +440,22 @@ class TaskRepository {
         updatedAt: Value(timestamp),
       ),
     );
+    await _outbox.enqueue(_db.tasks.actualTableName, taskId, now: timestamp);
     await _refreshDerivedState(taskId);
     return _liveTask(taskId);
   }
 
   /// Takes a snooze back, so the task's due date is the schedule's again.
   Future<void> cancelSnooze(String taskId, {DateTime? now}) async {
+    final timestamp = now ?? DateTime.now();
     await (_db.update(_db.tasks)..where((t) => t.id.equals(taskId))).write(
       TasksCompanion(
         snoozedUntil: const Value(null),
         snoozedAt: const Value(null),
-        updatedAt: Value(now ?? DateTime.now()),
+        updatedAt: Value(timestamp),
       ),
     );
+    await _outbox.enqueue(_db.tasks.actualTableName, taskId, now: timestamp);
     await _refreshDerivedState(taskId);
   }
 
@@ -457,13 +475,20 @@ class TaskRepository {
   Future<void> restoreTask(String taskId, {DateTime? now}) =>
       _setArchived(taskId, false, now);
 
-  Future<void> _setArchived(String taskId, bool isArchived, DateTime? now) =>
-      (_db.update(_db.tasks)..where((t) => t.id.equals(taskId))).write(
-        TasksCompanion(
-          isArchived: Value(isArchived),
-          updatedAt: Value(now ?? DateTime.now()),
-        ),
-      );
+  Future<void> _setArchived(
+    String taskId,
+    bool isArchived,
+    DateTime? now,
+  ) async {
+    final timestamp = now ?? DateTime.now();
+    await (_db.update(_db.tasks)..where((t) => t.id.equals(taskId))).write(
+      TasksCompanion(
+        isArchived: Value(isArchived),
+        updatedAt: Value(timestamp),
+      ),
+    );
+    await _outbox.enqueue(_db.tasks.actualTableName, taskId, now: timestamp);
+  }
 
   /// One task by id, with its last completion read out of the log.
   Future<Task?> _liveTask(String taskId) async {

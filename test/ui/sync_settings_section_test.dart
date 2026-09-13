@@ -6,11 +6,16 @@ import 'package:nem/src/app/providers.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/interval_unit.dart';
+import 'package:nem/src/photos/photo.dart';
+import 'package:nem/src/photos/photo_providers.dart';
+import 'package:nem/src/photos/photo_transfer_queue.dart';
+import 'package:nem/src/sync/outbox_store.dart';
 import 'package:nem/src/sync/sync_providers.dart';
 import 'package:nem/src/sync/sync_settings.dart';
 import 'package:nem/src/sync/sync_transport.dart';
 import 'package:nem/src/ui/sync_settings_section.dart';
 
+import '../photos/fake_photo_storage.dart';
 import '../sync/fake_sync_transport.dart';
 import '../sync/task_rows.dart';
 
@@ -18,11 +23,13 @@ void main() {
   late NemDatabase db;
   late SyncSettingsRepository settings;
   late FakeSyncTransport transport;
+  late FakePhotoStorage storage;
 
   setUp(() {
     db = NemDatabase(NativeDatabase.memory());
     settings = SyncSettingsRepository(db);
     transport = FakeSyncTransport();
+    storage = FakePhotoStorage();
   });
 
   tearDown(() => db.close());
@@ -50,6 +57,14 @@ void main() {
             syncTransportProvider.overrideWithValue(transport)
           else
             syncTransportProvider.overrideWithValue(null),
+          // The bytes' half of the same seam (#15). Overridden even though
+          // nothing here attaches a photo: it watches `supabaseClientProvider`,
+          // and these tests write a real-looking URL into the settings, so
+          // leaving it alone would open an actual Supabase client and leave its
+          // token-refresh timer pending.
+          photoStorageProvider.overrideWithValue(
+            withTransport ? storage : null,
+          ),
           syncAccountProvider.overrideWith((ref) => Stream.value(account)),
         ],
         child: const MaterialApp(
@@ -221,6 +236,35 @@ void main() {
     expect(transport.tables['tasks'], hasLength(1));
     expect(find.text('Everything is sent'), findsOneWidget);
 
+    await unmount(tester);
+  });
+
+  testWidgets('a photo waiting on the network is counted too', (tester) async {
+    await settings.write(
+      const SyncSettings(url: 'https://nem.supabase.co', anonKey: 'a-key'),
+    );
+    final task = await TaskRepository(db).createFloatingTask(
+      title: 'Water the plants',
+      intervalN: 1,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 1),
+      now: DateTime(2026, 6, 1, 9),
+    );
+    // The rows are all sent; only the bytes are not. A photo is a file plus a
+    // row and the two have separate queues (#15), so a phone can owe the
+    // backend no rows at all and still owe it a photograph — and saying
+    // "Everything is sent" would be exactly the silent drop the ticket is
+    // about.
+    await PhotoTransferQueue(db).enqueue(
+      'photo-1',
+      PhotoTransferOperation.upload,
+      now: DateTime(2026, 6, 2, 9),
+    );
+    await OutboxStore(db).remove('tasks', task.id);
+
+    await pump(tester, account: 'someone@example.com');
+
+    expect(find.text('1 photo waiting to be sent'), findsOneWidget);
     await unmount(tester);
   });
 

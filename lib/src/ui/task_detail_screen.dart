@@ -11,6 +11,7 @@ import 'category_chips.dart';
 import 'due_list_screen.dart' show formatDueDate;
 import 'fixed_schedule_editor.dart' show UneditableRule;
 import 'task_actions.dart';
+import 'task_photos.dart';
 
 /// A task and everything its completion log says about it.
 ///
@@ -70,6 +71,10 @@ class _Detail extends ConsumerWidget {
         _Schedule(task: task, now: now),
         _CategoriesTile(task: task),
         _ReminderTile(task: task),
+        // Above the history, because a reference photo is about the work
+        // ahead: it says what you are about to do, where the completion log
+        // below says what has already been done.
+        TaskPhotosSection(taskId: task.id),
         _Summaries(summaries: history.summaries),
         const _Heading('History'),
         if (history.isEmpty)

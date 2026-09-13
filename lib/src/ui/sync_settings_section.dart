@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../photos/photo_providers.dart';
 import '../sync/supabase_connection.dart';
 import '../sync/sync_controller.dart';
 import '../sync/sync_providers.dart';
@@ -252,6 +253,11 @@ class _SyncStatusTile extends ConsumerWidget {
     final theme = Theme.of(context);
     final status = ref.watch(syncStatusProvider);
     final pending = ref.watch(outboxPendingProvider).value ?? 0;
+    // The bytes' queue is counted separately from the rows' (#15): a phone can
+    // owe the backend no rows at all and still owe it a photograph, and
+    // "Everything is sent" while an upload is stuck would be the silent drop
+    // the ticket is about.
+    final photos = ref.watch(pendingPhotoTransfersProvider).value ?? 0;
     // Who is signed in comes from the session rather than from the last sync's
     // status, which only learns it once a sync has run.
     final isSignedIn = ref.watch(syncAccountProvider).value != null;
@@ -262,7 +268,12 @@ class _SyncStatusTile extends ConsumerWidget {
         ListTile(
           leading: const Icon(Icons.sync),
           title: Text(
-            _summary(status, pending: pending, isSignedIn: isSignedIn),
+            _summary(
+              status,
+              pending: pending,
+              photos: photos,
+              isSignedIn: isSignedIn,
+            ),
           ),
           subtitle: status.lastError == null
               ? null
@@ -288,6 +299,7 @@ class _SyncStatusTile extends ConsumerWidget {
   String _summary(
     SyncStatus status, {
     required int pending,
+    required int photos,
     required bool isSignedIn,
   }) {
     if (status.isSyncing) return 'Syncing…';
@@ -296,6 +308,11 @@ class _SyncStatusTile extends ConsumerWidget {
       return pending == 1
           ? '1 change waiting to be sent'
           : '$pending changes waiting to be sent';
+    }
+    if (photos > 0) {
+      return photos == 1
+          ? '1 photo waiting to be sent'
+          : '$photos photos waiting to be sent';
     }
     if (status.lastError != null) return 'Last sync did not finish';
     return 'Everything is sent';

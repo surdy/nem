@@ -68,6 +68,17 @@ void main() {
     await tester.pump(Duration.zero);
   }
 
+  /// Scrolls the detail list down to the completion history.
+  ///
+  /// The reference photo strip sits between the schedule and the history
+  /// (#15), which is more than the 600px test viewport has room for. The real
+  /// screen scrolls, and so does this — the outer `Scrollable` is the first in
+  /// the tree, the horizontal photo strip inside it being the second.
+  Future<void> revealHistory(WidgetTester tester) async {
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -400));
+    await tester.pumpAndSettle();
+  }
+
   /// Runs the time picker's open and close transitions.
   ///
   /// Deliberately not `pumpAndSettle`: the dial keeps a frame scheduled for as
@@ -95,6 +106,7 @@ void main() {
     await pumpDetail(tester, await weeklyTaskId());
 
     expect(find.text('Replace the water filter'), findsOneWidget);
+    await revealHistory(tester);
     expect(find.textContaining('No completions yet'), findsOneWidget);
     expect(find.text('0 completions'), findsNWidgets(2));
     await unmount(tester);
@@ -112,6 +124,7 @@ void main() {
 
     await pumpDetail(tester, taskId);
 
+    await revealHistory(tester);
     expect(find.textContaining('8 Jun 2026'), findsOneWidget);
     expect(find.textContaining('By hand'), findsOneWidget);
     await unmount(tester);
@@ -129,6 +142,7 @@ void main() {
 
     // Two missed weeks on a 7-day schedule, visible only as the gap (ADR
     // 0007).
+    await revealHistory(tester);
     expect(find.textContaining('23 days later'), findsOneWidget);
     expect(find.text('16 days late'), findsOneWidget);
     await unmount(tester);
@@ -169,6 +183,7 @@ void main() {
 
     await pumpDetail(tester, taskId);
 
+    await revealHistory(tester);
     expect(find.textContaining('15 Jun 2026'), findsOneWidget);
     expect(find.textContaining('8 Jul 2026'), findsNothing);
     expect(find.text('1 completion'), findsNWidgets(2));
@@ -190,6 +205,7 @@ void main() {
 
     await pumpDetail(tester, taskId);
 
+    await revealHistory(tester);
     expect(find.textContaining('2 Jul 2026'), findsOneWidget);
     expect(find.textContaining('8 Jul 2026'), findsNothing);
     expect(find.text('1 completion'), findsNWidgets(2));
@@ -214,9 +230,12 @@ void main() {
 
     await pumpDetail(tester, taskId);
 
+    // The recomputed due date is at the top of the list; the log is below the
+    // photo strip.
+    expect(find.textContaining('Due 15 Jul 2026'), findsOneWidget);
+    await revealHistory(tester);
     expect(find.textContaining('8 Jul 2026'), findsOneWidget);
     expect(find.textContaining('1999'), findsNothing);
-    expect(find.textContaining('Due 15 Jul 2026'), findsOneWidget);
     await unmount(tester);
   });
 
@@ -343,6 +362,52 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
     await tester.pumpAndSettle();
     await unmount(tester);
+  });
+
+  group('deleting', () {
+    testWidgets('asks first, and cancelling changes nothing', (tester) async {
+      final id = await weeklyTaskId();
+      await pumpDetail(tester, id);
+
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete task'));
+      await tester.pumpAndSettle();
+
+      // There is no undo for this one, which is why it asks at all — and the
+      // dialog says what survives and what does not.
+      expect(find.textContaining('reference photos are deleted'), findsOne);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(await repository.allTasks(), hasLength(1));
+      await unmount(tester);
+    });
+
+    testWidgets('confirming tombstones the task and says so', (tester) async {
+      final id = await weeklyTaskId();
+      await repository.recordCompletion(
+        id,
+        completedAt: DateTime(2026, 6, 8, 9),
+        now: DateTime(2026, 6, 8, 9),
+      );
+      await pumpDetail(tester, id);
+
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete task'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('confirm-delete-task')));
+      await tester.pumpAndSettle();
+
+      expect(await repository.allTasks(), isEmpty);
+      expect(find.textContaining('Deleted'), findsOneWidget);
+      // The completion log is left where it is: a task's tombstone does not
+      // un-happen the work (ADR 0004).
+      expect(await db.select(db.completions).get(), hasLength(1));
+
+      await unmount(tester);
+    });
   });
 
   testWidgets('an archived task says so, and offers to be restored', (

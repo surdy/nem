@@ -45,3 +45,9 @@ jobs:
         run: flutter test
         env:
           TZ: America/New_York
+
+      # analyze and test never compile the Android app, so a Gradle-level
+      # failure — a plugin needing desugaring, a manifest clash, a minSdk
+      # bump — passes CI and only shows up when someone runs the app.
+      - name: Build Android APK
+        run: flutter build apk --debug

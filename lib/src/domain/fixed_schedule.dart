@@ -69,37 +69,74 @@ class FixedSchedule {
       zoneId = parsedZoneId ?? defaultZoneId;
     }
 
-    return FixedSchedule(
-      rule: RecurrenceRule.fromString(rruleLine),
-      anchor: anchor,
-      zoneId: zoneId,
-    );
+    final RecurrenceRule rule;
+    try {
+      rule = RecurrenceRule.fromString(rruleLine);
+    } on FormatException {
+      rethrow;
+    } catch (error) {
+      // `rrule` validates RFC 5545's combination rules with assertions —
+      // "the second Tuesday, weekly" is not a rule at all — so an impossible
+      // one arrives as an AssertionError in a debug build and as nothing in
+      // release. Either way it is text nem cannot read, which callers already
+      // handle; a rule that reached storage by hand must not crash a screen
+      // in one build mode and not the other (ADR 0006).
+      throw FormatException('$error', rruleLine);
+    }
+
+    return FixedSchedule(rule: rule, anchor: anchor, zoneId: zoneId);
   }
 
-  /// Builds the schedule the minimal editor can author: a frequency, an
-  /// interval, and — for a weekly rule — a set of weekdays (issue #3).
+  /// Builds the schedule the editor can author: a frequency, an interval, a set
+  /// of weekdays for a weekly rule, the shape of a monthly rule, and an end
+  /// condition.
   ///
-  /// Day-of-month, nth-weekday and end conditions are issue #4. They are absent
-  /// here, not impossible: [rule] is a full [RecurrenceRule], so storage stays
-  /// strictly more expressive than the editor (ADR 0006).
+  /// That is the whole of the editor's vocabulary and deliberately not the
+  /// whole of RFC 5545's — [rule] is a full [RecurrenceRule], so storage stays
+  /// strictly more expressive than the editor (ADR 0006). [FixedScheduleDraft]
+  /// is the same vocabulary as a value, and is what reads a stored rule back
+  /// into it.
   factory FixedSchedule.build({
     required FixedFrequency frequency,
     int interval = 1,
     Set<int> weekdays = const {},
+    MonthlyOn monthlyOn = MonthlyOn.dayOfMonth,
+    FixedScheduleEnd end = const NeverEnds(),
     required DateTime startDate,
     required String zoneId,
   }) {
     assert(interval > 0, 'A fixed interval must be at least 1');
-    final byWeekDays = frequency == FixedFrequency.weekly
-        ? [for (final day in weekdays.toList()..sort()) ByWeekDayEntry(day)]
-        : const <ByWeekDayEntry>[];
     return FixedSchedule(
       rule: RecurrenceRule(
         frequency: frequency.frequency,
         // `INTERVAL=1` is the default and is left out rather than written, so
         // two schedules that mean the same thing store the same string.
         interval: interval == 1 ? null : interval,
-        byWeekDays: byWeekDays,
+        byWeekDays: _byWeekDaysFor(
+          frequency: frequency,
+          weekdays: weekdays,
+          monthlyOn: monthlyOn,
+          startDate: startDate,
+        ),
+        // `UNTIL` is written in the same floating wall-clock frame as the
+        // anchor, and at the last second of the chosen day so that the day
+        // itself is included whatever time of day the occurrences fall at
+        // (ADR 0010; `rrule` compares it against the floating occurrence).
+        until: switch (end) {
+          EndsOnDate(:final date) => DateTime.utc(
+            date.year,
+            date.month,
+            date.day,
+            23,
+            59,
+            59,
+          ),
+          _ => null,
+        },
+        count: switch (end) {
+          EndsAfter(:final occurrences) => occurrences,
+          _ => null,
+        },
       ),
       anchor: startDate,
       zoneId: zoneId,
@@ -150,8 +187,12 @@ class FixedSchedule {
   /// value as [anchor].
   ///
   /// **The returned iterable is endless** for a rule with no `COUNT` or
-  /// `UNTIL`, which is every rule the editor can author. Take what you need and
-  /// no more; never materialise it.
+  /// `UNTIL` — the default end condition, and so most rules. Take what you need
+  /// and no more; never materialise it without knowing the rule is bounded.
+  ///
+  /// A `COUNT` is counted from the anchor and not from [from], so asking from
+  /// past the last occurrence yields nothing rather than a fresh run of `COUNT`
+  /// more.
   Iterable<tz.TZDateTime> occurrencesFrom(
     DateTime from, {
     bool inclusive = true,
@@ -197,46 +238,26 @@ class FixedSchedule {
     return DateTime(zoned.year, zoned.month, zoned.day);
   }
 
+  /// This rule read back into the editor's vocabulary, or null when the editor
+  /// cannot say it (ADR 0006).
+  ///
+  /// Null is the normal, expected answer for a rule that reached storage by
+  /// hand-edit or import. Such a rule is shown as itself and read-only; nothing
+  /// in nem rewrites it into something the editor could have authored.
+  ///
+  /// Computed once: decoding walks every `BYxxx` part.
+  late final FixedScheduleDraft? draft = FixedScheduleDraft.of(this);
+
+  /// Whether the editor could author this rule, and so whether it may be
+  /// offered for editing rather than shown read-only (ADR 0006).
+  bool get isEditable => draft != null;
+
   /// Human label for the schedule, e.g. "Every Tuesday", mirroring
   /// [FloatingSchedule.label].
   ///
-  /// Falls back to the raw rule for anything the minimal editor cannot author,
-  /// so a hand-edited or imported rule reads as itself rather than as a lie.
-  /// Presenting such a rule properly is issue #4.
-  String get label {
-    final frequency = FixedFrequency.of(rule.frequency);
-    if (frequency == null || !_isEditorAuthorable) return rule.toString();
-
-    final n = rule.actualInterval;
-    final every = n == 1
-        ? 'Every ${frequency.unit.singular}'
-        : 'Every ${frequency.unit.labelFor(n)}';
-
-    if (frequency != FixedFrequency.weekly || rule.byWeekDays.isEmpty) {
-      return every;
-    }
-    final days = (rule.byWeekDays.toList()..sort())
-        .map((entry) => _weekdayNames[entry.day]!)
-        .join(', ');
-    return n == 1 ? 'Every $days' : '$every on $days';
-  }
-
-  /// Whether the minimal editor could have produced this rule.
-  ///
-  /// Anything else reached storage by hand-edit or import (ADR 0006).
-  bool get _isEditorAuthorable =>
-      rule.until == null &&
-      rule.count == null &&
-      rule.byMonthDays.isEmpty &&
-      rule.byYearDays.isEmpty &&
-      rule.byWeeks.isEmpty &&
-      rule.byMonths.isEmpty &&
-      rule.bySetPositions.isEmpty &&
-      rule.byHours.isEmpty &&
-      rule.byMinutes.isEmpty &&
-      rule.bySeconds.isEmpty &&
-      rule.byWeekDays.every((entry) => entry.hasNoOccurrence) &&
-      (rule.byWeekDays.isEmpty || rule.frequency == Frequency.weekly);
+  /// Falls back to the raw rule for anything the editor cannot author, so a
+  /// hand-edited or imported rule reads as itself rather than as a lie.
+  String get label => draft?.summary ?? rule.toString();
 
   @override
   String toString() => 'FixedSchedule($rule, from $anchor in $zoneId)';
@@ -312,6 +333,456 @@ enum FixedFrequency {
   }
 }
 
+/// Which shape a monthly rule takes — the choice the editor offers, and the
+/// whole of it.
+///
+/// Both weekday shapes read their weekday and their ordinal off the start date
+/// rather than asking for them separately, which is what Google Calendar's
+/// dialog does: choosing 20 January 2026 offers "the third Tuesday", not a
+/// weekday picker and an ordinal picker to disagree with each other.
+enum MonthlyOn {
+  /// `BYMONTHDAY` — implied by the anchor, so nothing is written.
+  ///
+  /// RFC 5545 **skips** a month with no such day rather than clamping to its
+  /// last one, which is the opposite of what a floating monthly interval does.
+  /// Both are correct for what they mean and neither is quietly corrected into
+  /// the other (ADR 0005).
+  dayOfMonth,
+
+  /// `BYDAY=<n><day>`, e.g. `BYDAY=3TU` — "the third Tuesday".
+  nthWeekday,
+
+  /// `BYDAY=-1<day>`, e.g. `BYDAY=-1TU` — "the last Tuesday".
+  ///
+  /// Distinct from a fifth weekday, which is not the same rule: `BYDAY=5TU`
+  /// skips the months that have only four Tuesdays, and `BYDAY=-1TU` does not.
+  /// The editor only ever writes the latter.
+  lastWeekday,
+}
+
+/// When a fixed schedule stops producing occurrences: never, on a date, or
+/// after a number of them.
+sealed class FixedScheduleEnd {
+  const FixedScheduleEnd();
+}
+
+/// Repeats for ever — neither `UNTIL` nor `COUNT`, and the default.
+final class NeverEnds extends FixedScheduleEnd {
+  const NeverEnds();
+
+  @override
+  bool operator ==(Object other) => other is NeverEnds;
+
+  @override
+  int get hashCode => (NeverEnds).hashCode;
+
+  @override
+  String toString() => 'NeverEnds()';
+}
+
+/// Repeats up to and including [date] — `UNTIL`.
+///
+/// [date] is a calendar date in the schedule's own zone, with no time of day:
+/// "ends on 31 December" ends at the end of that day wherever the occurrences
+/// sit within it.
+final class EndsOnDate extends FixedScheduleEnd {
+  const EndsOnDate(this.date);
+
+  final DateTime date;
+
+  @override
+  bool operator ==(Object other) =>
+      other is EndsOnDate &&
+      other.date.year == date.year &&
+      other.date.month == date.month &&
+      other.date.day == date.day;
+
+  @override
+  int get hashCode => Object.hash(date.year, date.month, date.day);
+
+  @override
+  String toString() => 'EndsOnDate($date)';
+}
+
+/// Repeats [occurrences] times and then stops — `COUNT`.
+///
+/// Counted from the anchor, so the count survives however late the work is
+/// done: a schedule of ten occurrences produces ten whatever the completion log
+/// says.
+final class EndsAfter extends FixedScheduleEnd {
+  const EndsAfter(this.occurrences)
+    : assert(occurrences > 0, 'A schedule ends after at least one occurrence');
+
+  final int occurrences;
+
+  @override
+  bool operator ==(Object other) =>
+      other is EndsAfter && other.occurrences == occurrences;
+
+  @override
+  int get hashCode => Object.hash(EndsAfter, occurrences);
+
+  @override
+  String toString() => 'EndsAfter($occurrences)';
+}
+
+/// Everything the fixed-schedule editor can say, as one value.
+///
+/// This is the narrow authoring vocabulary of ADR 0006 written down: frequency,
+/// interval, weekday set, the shape of a monthly rule, and an end condition —
+/// Google Calendar's custom recurrence dialog and no more. [toSchedule] writes
+/// it out as an RRULE and [of] reads one back, so a rule this editor wrote
+/// always survives the round trip through storage unchanged.
+///
+/// [of] returns **null** for a rule outside that vocabulary, which is not an
+/// error: storage is deliberately more expressive than the UI, and such a rule
+/// is shown as itself, read-only, rather than being rewritten into the nearest
+/// thing the editor could have said.
+class FixedScheduleDraft {
+  const FixedScheduleDraft({
+    required this.frequency,
+    required this.startDate,
+    required this.zoneId,
+    this.interval = 1,
+    this.weekdays = const {},
+    this.monthlyOn = MonthlyOn.dayOfMonth,
+    this.end = const NeverEnds(),
+  }) : assert(interval > 0, 'A fixed interval must be at least 1');
+
+  /// Reads [schedule] back into the editor's vocabulary, or returns null when
+  /// it says something the editor cannot (ADR 0006).
+  ///
+  /// Strict on purpose. Every rule part is either understood or refused: an
+  /// unrecognised part means the rule means something this build does not know,
+  /// and guessing would hand the user an editor that silently drops it on save.
+  static FixedScheduleDraft? of(FixedSchedule schedule) {
+    final rule = schedule.rule;
+    final frequency = FixedFrequency.of(rule.frequency);
+    if (frequency == null) return null;
+
+    // Parts the editor has no vocabulary for at all.
+    if (rule.bySeconds.isNotEmpty ||
+        rule.byMinutes.isNotEmpty ||
+        rule.byHours.isNotEmpty ||
+        rule.byYearDays.isNotEmpty ||
+        rule.byWeeks.isNotEmpty ||
+        rule.byMonths.isNotEmpty ||
+        rule.bySetPositions.isNotEmpty) {
+      return null;
+    }
+    // `WKST=MO` is RFC 5545's own default, so it says nothing the editor is not
+    // already saying. The package refuses any other value.
+    if (rule.weekStart != null && rule.weekStart != DateTime.monday) {
+      return null;
+    }
+
+    final end = _endOf(rule);
+    if (end == null) return null;
+
+    final anchor = schedule.anchor;
+    var weekdays = const <int>{};
+    var monthlyOn = MonthlyOn.dayOfMonth;
+
+    switch (frequency) {
+      case FixedFrequency.daily:
+      case FixedFrequency.yearly:
+        if (rule.byWeekDays.isNotEmpty || rule.byMonthDays.isNotEmpty) {
+          return null;
+        }
+      case FixedFrequency.weekly:
+        if (rule.byMonthDays.isNotEmpty) return null;
+        // "The second Tuesday" is meaningless weekly, and the editor's weekday
+        // chips cannot express it.
+        if (rule.byWeekDays.any((entry) => entry.hasOccurrence)) return null;
+        weekdays = {for (final entry in rule.byWeekDays) entry.day};
+      case FixedFrequency.monthly:
+        final byMonthDays = rule.byMonthDays;
+        final byWeekDays = rule.byWeekDays;
+        // A day of the month or an nth weekday, never both.
+        if (byMonthDays.isNotEmpty && byWeekDays.isNotEmpty) return null;
+        if (byWeekDays.isNotEmpty) {
+          final resolved = _monthlyOnOf(byWeekDays, anchor);
+          if (resolved == null) return null;
+          monthlyOn = resolved;
+        } else if (byMonthDays.isNotEmpty) {
+          // The editor writes no `BYMONTHDAY`, because RFC 5545 already reads
+          // an absent one as the anchor's day. An explicit one saying exactly
+          // that is the same rule spelled out, so it is editable; any other day
+          // is a rule the editor cannot re-say and is left alone.
+          if (byMonthDays.length != 1 || byMonthDays.single != anchor.day) {
+            return null;
+          }
+        }
+    }
+
+    return FixedScheduleDraft(
+      frequency: frequency,
+      interval: rule.actualInterval,
+      weekdays: weekdays,
+      monthlyOn: monthlyOn,
+      end: end,
+      startDate: anchor,
+      zoneId: schedule.zoneId,
+    );
+  }
+
+  final FixedFrequency frequency;
+
+  /// How many [frequency] units pass between occurrences — `INTERVAL`.
+  final int interval;
+
+  /// The weekdays a weekly rule repeats on, as `DateTime.monday`… — `BYDAY`.
+  ///
+  /// Empty means no `BYDAY` at all, which RFC 5545 reads as the anchor's own
+  /// weekday, so the schedule means the same thing either way. Ignored by every
+  /// frequency but [FixedFrequency.weekly].
+  final Set<int> weekdays;
+
+  /// The shape of a monthly rule. Ignored by every other frequency.
+  final MonthlyOn monthlyOn;
+
+  final FixedScheduleEnd end;
+
+  /// The rule's `DTSTART` — wall-clock digits in [zoneId] (ADR 0010).
+  ///
+  /// Part of the draft rather than beside it, because the monthly shapes are
+  /// read off it: "the third Tuesday" is a fact about this date.
+  final DateTime startDate;
+
+  final String zoneId;
+
+  FixedScheduleDraft copyWith({
+    FixedFrequency? frequency,
+    int? interval,
+    Set<int>? weekdays,
+    MonthlyOn? monthlyOn,
+    FixedScheduleEnd? end,
+    DateTime? startDate,
+    String? zoneId,
+  }) => FixedScheduleDraft(
+    frequency: frequency ?? this.frequency,
+    interval: interval ?? this.interval,
+    weekdays: weekdays ?? this.weekdays,
+    monthlyOn: monthlyOn ?? this.monthlyOn,
+    end: end ?? this.end,
+    startDate: startDate ?? this.startDate,
+    zoneId: zoneId ?? this.zoneId,
+  );
+
+  /// This draft as a schedule, ready to encode and store.
+  FixedSchedule toSchedule() => FixedSchedule.build(
+    frequency: frequency,
+    interval: interval,
+    weekdays: weekdays,
+    monthlyOn: effectiveMonthlyOn,
+    end: end,
+    startDate: startDate,
+    zoneId: zoneId,
+  );
+
+  /// The monthly shapes [startDate] can take — what the editor offers.
+  ///
+  /// A date in the last week of its month can be "the last Tuesday"; a date in
+  /// the fifth week cannot be "the fifth Tuesday", because the editor does not
+  /// author a rule that skips the months without one.
+  List<MonthlyOn> get monthlyOptions => [
+    MonthlyOn.dayOfMonth,
+    if (_weekOfMonth(startDate) <= 4) MonthlyOn.nthWeekday,
+    if (_isLastWeekOfMonth(startDate)) MonthlyOn.lastWeekday,
+  ];
+
+  /// [monthlyOn] corrected for a start date that has since moved.
+  ///
+  /// Changing the start date can take the chosen shape away — the 20th is the
+  /// third Tuesday, the 29th is no numbered Tuesday at all. The intent survives
+  /// the move rather than the setting silently going stale: a weekday shape
+  /// stays a weekday shape.
+  MonthlyOn get effectiveMonthlyOn {
+    if (monthlyOptions.contains(monthlyOn)) return monthlyOn;
+    return _isLastWeekOfMonth(startDate)
+        ? MonthlyOn.lastWeekday
+        : MonthlyOn.nthWeekday;
+  }
+
+  /// How a monthly shape reads in a sentence, e.g. "the 15th", "the third
+  /// Tuesday". Also what the editor labels its options with.
+  String monthlyClause(MonthlyOn on) => switch (on) {
+    MonthlyOn.dayOfMonth => 'the ${_ordinal(startDate.day)}',
+    MonthlyOn.nthWeekday =>
+      'the ${_ordinalWords[_weekOfMonth(startDate)]} '
+          '${_weekdayNames[startDate.weekday]}',
+    MonthlyOn.lastWeekday => 'the last ${_weekdayNames[startDate.weekday]}',
+  };
+
+  /// Whether this rule skips the months that are too short for it.
+  ///
+  /// True only of a day-of-month rule past the 28th. Worth saying out loud in
+  /// the editor: RFC 5545 drops February rather than clamping to its last day,
+  /// which is the opposite of a floating monthly interval (ADR 0005), and it is
+  /// not something to quietly correct.
+  bool get skipsShortMonths =>
+      frequency == FixedFrequency.monthly &&
+      effectiveMonthlyOn == MonthlyOn.dayOfMonth &&
+      startDate.day > 28;
+
+  /// Whether the end condition falls before the schedule begins, so the rule
+  /// produces no occurrences at all.
+  ///
+  /// The date picker cannot reach such a date, but moving the start date
+  /// afterwards can, and a task with nothing ever due is worth saying out loud
+  /// rather than leaving as a silently empty schedule.
+  bool get endsBeforeItStarts => switch (end) {
+    EndsOnDate(:final date) => DateTime(
+      date.year,
+      date.month,
+      date.day,
+    ).isBefore(DateTime(startDate.year, startDate.month, startDate.day)),
+    _ => false,
+  };
+
+  /// The rule in plain language, e.g. "Every 2 weeks on Tuesday, Friday, for 10
+  /// occurrences".
+  ///
+  /// Shown live while the rule is being built, and used as the schedule's label
+  /// everywhere else, so what the editor promises and what the list says are
+  /// one string with one definition.
+  String get summary {
+    final every = interval == 1
+        ? 'Every ${frequency.unit.singular}'
+        : 'Every ${frequency.unit.labelFor(interval)}';
+
+    final base = switch (frequency) {
+      FixedFrequency.daily || FixedFrequency.yearly => every,
+      FixedFrequency.weekly when weekdays.isEmpty => every,
+      FixedFrequency.weekly => () {
+        final days = (weekdays.toList()..sort())
+            .map((day) => _weekdayNames[day]!)
+            .join(', ');
+        return interval == 1 ? 'Every $days' : '$every on $days';
+      }(),
+      FixedFrequency.monthly =>
+        '$every on ${monthlyClause(effectiveMonthlyOn)}',
+    };
+
+    return switch (end) {
+      NeverEnds() => base,
+      EndsOnDate(:final date) => '$base, until ${_formatDate(date)}',
+      EndsAfter(:final occurrences) =>
+        '$base, for $occurrences '
+            '${occurrences == 1 ? 'occurrence' : 'occurrences'}',
+    };
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is FixedScheduleDraft &&
+      other.frequency == frequency &&
+      other.interval == interval &&
+      other.weekdays.length == weekdays.length &&
+      other.weekdays.containsAll(weekdays) &&
+      other.effectiveMonthlyOn == effectiveMonthlyOn &&
+      other.end == end &&
+      other.startDate == startDate &&
+      other.zoneId == zoneId;
+
+  @override
+  int get hashCode => Object.hash(
+    frequency,
+    interval,
+    Object.hashAllUnordered(weekdays),
+    effectiveMonthlyOn,
+    end,
+    startDate,
+    zoneId,
+  );
+
+  @override
+  String toString() =>
+      'FixedScheduleDraft($summary, from $startDate in $zoneId)';
+}
+
+/// The end condition [rule] carries, or null when it has one the editor cannot
+/// re-say.
+///
+/// An `UNTIL` is only editable when it sits at the last second of its day,
+/// which is where [FixedSchedule.build] puts one. Anything else ends partway
+/// through a day — a real distinction for a schedule with a time of day — and
+/// re-saving it from a date picker would quietly move it.
+FixedScheduleEnd? _endOf(RecurrenceRule rule) {
+  final count = rule.count;
+  if (count != null) return EndsAfter(count);
+
+  final until = rule.until;
+  if (until == null) return const NeverEnds();
+  if (until.hour != 23 || until.minute != 59 || until.second != 59) return null;
+  return EndsOnDate(DateTime(until.year, until.month, until.day));
+}
+
+/// Which monthly shape a `BYDAY` list says, given the anchor it is read
+/// against, or null for one the editor cannot author.
+MonthlyOn? _monthlyOnOf(List<ByWeekDayEntry> byWeekDays, DateTime anchor) {
+  if (byWeekDays.length != 1) return null;
+  final entry = byWeekDays.single;
+  // The editor derives the weekday from the start date, so a rule naming a
+  // different one is a rule it could not have written and cannot rewrite.
+  if (entry.day != anchor.weekday) return null;
+
+  if (entry.occurrence == -1 && _isLastWeekOfMonth(anchor)) {
+    return MonthlyOn.lastWeekday;
+  }
+  final week = _weekOfMonth(anchor);
+  if (entry.occurrence == week && week <= 4) return MonthlyOn.nthWeekday;
+  return null;
+}
+
+/// The `BYDAY` list for a rule of this shape.
+List<ByWeekDayEntry> _byWeekDaysFor({
+  required FixedFrequency frequency,
+  required Set<int> weekdays,
+  required MonthlyOn monthlyOn,
+  required DateTime startDate,
+}) => switch (frequency) {
+  FixedFrequency.weekly => [
+    for (final day in weekdays.toList()..sort()) ByWeekDayEntry(day),
+  ],
+  FixedFrequency.monthly => switch (monthlyOn) {
+    MonthlyOn.dayOfMonth => const [],
+    // A fifth weekday is written as the last one rather than as `5`: the
+    // editor never offers a rule that skips the months without a fifth.
+    MonthlyOn.nthWeekday => [
+      ByWeekDayEntry(startDate.weekday, switch (_weekOfMonth(startDate)) {
+        final week when week <= 4 => week,
+        _ => -1,
+      }),
+    ],
+    MonthlyOn.lastWeekday => [ByWeekDayEntry(startDate.weekday, -1)],
+  },
+  FixedFrequency.daily || FixedFrequency.yearly => const [],
+};
+
+/// Which week of its month [date] falls in, 1–5.
+int _weekOfMonth(DateTime date) => (date.day - 1) ~/ 7 + 1;
+
+/// Whether [date] is in the last seven days of its month, and so is the last
+/// such weekday in it.
+bool _isLastWeekOfMonth(DateTime date) =>
+    date.day + 7 > DateTime(date.year, date.month + 1, 0).day;
+
+String _ordinal(int day) {
+  final suffix = day >= 11 && day <= 13
+      ? 'th'
+      : switch (day % 10) {
+          1 => 'st',
+          2 => 'nd',
+          3 => 'rd',
+          _ => 'th',
+        };
+  return '$day$suffix';
+}
+
+String _formatDate(DateTime date) =>
+    '${date.day} ${_monthNames[date.month - 1]} ${date.year}';
+
 /// Relabels a wall-clock local time as UTC, preserving the digits.
 ///
 /// This is the single most confusing line in the scheduling code and it is
@@ -366,6 +837,23 @@ T? _firstOrNull<T>(Iterable<T> values) {
     zoneId,
   );
 }
+
+const _ordinalWords = {1: 'first', 2: 'second', 3: 'third', 4: 'fourth'};
+
+const _monthNames = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
 
 const _weekdayNames = {
   DateTime.monday: 'Monday',

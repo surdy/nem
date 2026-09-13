@@ -8,6 +8,7 @@ import '../domain/schedule.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
 import 'due_list_screen.dart' show formatDueDate;
+import 'fixed_schedule_editor.dart';
 
 /// Creates a task with either kind of schedule (ADR 0005).
 ///
@@ -44,6 +45,9 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
   /// the schedule means the same thing either way.
   late Set<int> _weekdays = {_startDate.weekday};
 
+  MonthlyOn _monthlyOn = MonthlyOn.dayOfMonth;
+  FixedScheduleEnd _end = const NeverEnds();
+
   bool _saving = false;
 
   @override
@@ -71,17 +75,40 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
     );
   }
 
-  FixedSchedule? get _fixedSchedule {
+  /// The fixed rule the form currently describes.
+  ///
+  /// Always present, so the editor below has something to render and summarise
+  /// while the interval box is empty or nonsense; [_fixedSchedule] is what
+  /// refuses to build a schedule out of that.
+  FixedScheduleDraft get _fixedDraft {
     final n = _intervalN;
-    if (n == null || n < 1) return null;
-    return FixedSchedule.build(
+    return FixedScheduleDraft(
       frequency: _frequency,
-      interval: n,
+      interval: (n == null || n < 1) ? 1 : n,
       weekdays: _weekdays,
+      monthlyOn: _monthlyOn,
+      end: _end,
       startDate: _startDate,
       zoneId: ref.read(zoneIdProvider),
     );
   }
+
+  FixedSchedule? get _fixedSchedule {
+    final n = _intervalN;
+    if (n == null || n < 1) return null;
+    return _fixedDraft.toSchedule();
+  }
+
+  /// Takes the editor's whole draft back apart into the form's own state.
+  ///
+  /// The start date and the interval stay owned by the form, because both are
+  /// shared with the floating mode; everything else the editor decides.
+  void _applyDraft(FixedScheduleDraft draft) => setState(() {
+    _frequency = draft.frequency;
+    _weekdays = draft.weekdays;
+    _monthlyOn = draft.monthlyOn;
+    _end = draft.end;
+  });
 
   /// The due date this task will have, derived live from the schedule the form
   /// describes. It is shown, never edited (ADR 0004).
@@ -251,26 +278,9 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
                 ),
               ],
             ),
-            if (isFixed && _frequency == FixedFrequency.weekly) ...[
+            if (isFixed) ...[
               const SizedBox(height: 16),
-              _WeekdayPicker(
-                selected: _weekdays,
-                fallbackWeekday: _startDate.weekday,
-                onChanged: (value) => setState(() => _weekdays = value),
-              ),
-            ],
-            if (isFixed &&
-                _frequency == FixedFrequency.monthly &&
-                _startDate.day > 28) ...[
-              const SizedBox(height: 8),
-              Text(
-                // RFC 5545 skips a month that has no such day rather than
-                // clamping to its last one, which is the opposite of what a
-                // floating monthly interval does. Say so rather than surprise
-                // someone in February.
-                'Months shorter than ${_startDate.day} days are skipped.',
-                style: theme.textTheme.bodySmall,
-              ),
+              FixedScheduleEditor(draft: _fixedDraft, onChanged: _applyDraft),
             ],
             const SizedBox(height: 8),
             ListTile(
@@ -357,82 +367,6 @@ class _FrequencyField extends StatelessWidget {
       onChanged: (selected) {
         if (selected != null) onChanged(selected);
       },
-    );
-  }
-}
-
-/// Which weekdays a weekly fixed rule repeats on — `BYDAY`.
-///
-/// Selecting none is allowed and means the start date's own weekday, which is
-/// what RFC 5545 does with an absent `BYDAY`.
-class _WeekdayPicker extends StatelessWidget {
-  const _WeekdayPicker({
-    required this.selected,
-    required this.fallbackWeekday,
-    required this.onChanged,
-  });
-
-  final Set<int> selected;
-  final int fallbackWeekday;
-  final ValueChanged<Set<int>> onChanged;
-
-  static const _initials = {
-    DateTime.monday: 'M',
-    DateTime.tuesday: 'T',
-    DateTime.wednesday: 'W',
-    DateTime.thursday: 'T',
-    DateTime.friday: 'F',
-    DateTime.saturday: 'S',
-    DateTime.sunday: 'S',
-  };
-
-  static const _names = {
-    DateTime.monday: 'Monday',
-    DateTime.tuesday: 'Tuesday',
-    DateTime.wednesday: 'Wednesday',
-    DateTime.thursday: 'Thursday',
-    DateTime.friday: 'Friday',
-    DateTime.saturday: 'Saturday',
-    DateTime.sunday: 'Sunday',
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Repeats on', style: Theme.of(context).textTheme.labelLarge),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          children: [
-            for (final weekday in _initials.keys)
-              FilterChip(
-                key: ValueKey('weekday-$weekday'),
-                label: Text(_initials[weekday]!),
-                tooltip: _names[weekday],
-                selected: selected.contains(weekday),
-                showCheckmark: false,
-                onSelected: (isSelected) {
-                  final next = {...selected};
-                  if (isSelected) {
-                    next.add(weekday);
-                  } else {
-                    next.remove(weekday);
-                  }
-                  onChanged(next);
-                },
-              ),
-          ],
-        ),
-        if (selected.isEmpty) ...[
-          const SizedBox(height: 8),
-          Text(
-            'Repeats on ${_names[fallbackWeekday]}, from the start date.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-        ],
-      ],
     );
   }
 }

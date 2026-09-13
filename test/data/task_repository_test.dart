@@ -297,6 +297,79 @@ void main() {
       },
     );
 
+    test(
+      'a rule the editor cannot say keeps its bytes and its due date',
+      () async {
+        // The other half of ADR 0006: storage is more expressive than the UI,
+        // so a hand-edited or imported rule has to survive being read, listed
+        // and written back without being normalised into something else.
+        const imported =
+            'DTSTART;TZID=Europe/London:20260301T000000\n'
+            'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU';
+        final task = await repository.createFixedTask(
+          title: 'Imported from a calendar',
+          schedule: tuesdays(),
+        );
+        await db.customStatement('UPDATE tasks SET rrule = ? WHERE id = ?', [
+          imported,
+          task.id,
+        ]);
+        // Recomputing the caches is the write most likely to rewrite it.
+        await repository.recomputeDerivedState();
+
+        final stored = (await repository.allTasks()).single;
+        expect(stored.rrule, imported);
+        expect(stored.fixedSchedule?.isEditable, isFalse);
+        expect(stored.fixedSchedule?.draft, isNull);
+        expect(date(stored.dueDate!), '2026-03-08');
+
+        final row = await db.select(db.tasks).getSingle();
+        expect(row.rrule, imported);
+      },
+    );
+
+    test('every rule the editor authors survives storage unchanged', () async {
+      // editor → storage → editor, through the real column rather than a
+      // string round trip: what comes back can be edited again.
+      final drafts = [
+        FixedScheduleDraft(
+          frequency: FixedFrequency.monthly,
+          monthlyOn: MonthlyOn.nthWeekday,
+          startDate: DateTime(2026, 1, 20),
+          zoneId: 'Europe/London',
+          end: const EndsAfter(6),
+        ),
+        FixedScheduleDraft(
+          frequency: FixedFrequency.monthly,
+          interval: 2,
+          monthlyOn: MonthlyOn.lastWeekday,
+          startDate: DateTime(2026, 1, 27),
+          zoneId: 'America/New_York',
+          end: EndsOnDate(DateTime(2027, 6, 30)),
+        ),
+        FixedScheduleDraft(
+          frequency: FixedFrequency.weekly,
+          weekdays: {DateTime.tuesday, DateTime.friday},
+          startDate: DateTime(2026, 1, 6, 9),
+          zoneId: 'Australia/Lord_Howe',
+        ),
+      ];
+
+      for (final draft in drafts) {
+        final created = await repository.createFixedTask(
+          title: draft.summary,
+          schedule: draft.toSchedule(),
+        );
+        final stored = (await repository.allTasks()).singleWhere(
+          (task) => task.id == created.id,
+        );
+        expect(stored.fixedSchedule?.draft, draft, reason: draft.summary);
+        expect(stored.rrule, draft.toSchedule().encode());
+        expect(stored.scheduleLabel, draft.summary);
+        expect(stored.dueDate, isNotNull);
+      }
+    });
+
     test('floating and fixed tasks share the list', () async {
       await repository.createFloatingTask(
         title: 'Replace the water filter',

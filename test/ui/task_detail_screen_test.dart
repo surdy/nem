@@ -6,14 +6,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nem/src/app/providers.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/task_repository.dart';
+import 'package:nem/src/domain/fixed_schedule.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/ui/due_list_screen.dart';
 import 'package:nem/src/ui/task_detail_screen.dart';
+import 'package:timezone/data/latest.dart' as tz_data;
 
 void main() {
   late NemDatabase db;
   late TaskRepository repository;
   final now = DateTime(2026, 7, 10, 12);
+
+  // Fixed schedules resolve against the tz database (ADR 0010).
+  setUpAll(tz_data.initializeTimeZones);
 
   setUp(() {
     db = NemDatabase(NativeDatabase.memory());
@@ -180,6 +185,79 @@ void main() {
     expect(find.textContaining('1999'), findsNothing);
     expect(find.textContaining('Due 15 Jul 2026'), findsOneWidget);
     await unmount(tester);
+  });
+
+  group('a fixed schedule', () {
+    Future<String> binsTaskId({FixedScheduleDraft? draft}) async {
+      final task = await repository.createFixedTask(
+        title: 'Put the bins out',
+        schedule:
+            (draft ??
+                    FixedScheduleDraft(
+                      frequency: FixedFrequency.monthly,
+                      monthlyOn: MonthlyOn.nthWeekday,
+                      startDate: DateTime(2026, 1, 20),
+                      zoneId: 'Europe/London',
+                    ))
+                .toSchedule(),
+      );
+      return task.id;
+    }
+
+    testWidgets('reads as the plain-language rule', (tester) async {
+      await pumpDetail(tester, await binsTaskId());
+
+      expect(find.text('Every month on the third Tuesday'), findsOneWidget);
+      expect(find.byKey(const ValueKey('uneditable-rule')), findsNothing);
+      await unmount(tester);
+    });
+
+    testWidgets('one nem cannot say is shown as itself, read-only', (
+      tester,
+    ) async {
+      // A rule that reached storage by hand-edit or import (ADR 0006). It must
+      // render rather than crash, and as the rule it is rather than as the
+      // nearest thing the editor could have said.
+      const imported =
+          'DTSTART;TZID=Europe/London:20260301T000000\n'
+          'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU';
+      final taskId = await binsTaskId();
+      await db.customStatement('UPDATE tasks SET rrule = ? WHERE id = ?', [
+        imported,
+        taskId,
+      ]);
+
+      await pumpDetail(tester, taskId);
+
+      expect(
+        tester
+            .widget<SelectableText>(
+              find.byKey(const ValueKey('uneditable-rule')),
+            )
+            .data,
+        imported,
+      );
+      expect(find.textContaining('cannot edit this calendar rule'), findsOne);
+      // It is still a schedule: the due date comes from it as usual.
+      expect(find.textContaining('Due 8 Mar 2026'), findsOneWidget);
+      await unmount(tester);
+    });
+
+    testWidgets('one this build cannot even read still renders', (
+      tester,
+    ) async {
+      final taskId = await binsTaskId();
+      await db.customStatement(
+        "UPDATE tasks SET rrule = 'RRULE:FREQ=NONSENSE' WHERE id = ?",
+        [taskId],
+      );
+
+      await pumpDetail(tester, taskId);
+
+      expect(find.text('RRULE:FREQ=NONSENSE'), findsOneWidget);
+      expect(find.textContaining('Due '), findsNothing);
+      await unmount(tester);
+    });
   });
 
   testWidgets('the due list opens a task\'s history', (tester) async {

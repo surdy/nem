@@ -25,6 +25,37 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Where a tag tapped while nem is closed or in the background lands
+             (#9). It holds no UI: it reads the URI off the dispatch and hands
+             it to MainActivity, which is already running or is started by it.
+
+             Dedicated rather than folded into MainActivity, and that is forced
+             by the permission below. From Android 17 (API 37), with targetSdk
+             above 36, an activity receiving an NFC dispatch must declare
+             android.permission.DISPATCH_NFC_MESSAGE or it receives nothing —
+             and declaring it means only the NFC system service may start the
+             activity, so it can be neither the launcher nor anything a test or
+             `adb` can reach (ADR 0009). nem's targetSdk is 36 today; declaring
+             it now is what makes the next bump a version number and not a
+             silently broken gesture.
+
+             The data element is the whole of the match: scheme lowercase and
+             without its colon, and for `nem://t/<uuid>` the `t` is the host. -->
+        <activity
+            android:name=".TagLaunchActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:permission="android.permission.DISPATCH_NFC_MESSAGE">
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="nem" android:host="t" />
+            </intent-filter>
+        </activity>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
@@ -66,12 +97,6 @@
     <uses-permission android:name="android.permission.NFC" />
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
 
-    <!-- Tap-to-launch from a closed app is #9, not this. It needs an
-         NDEF_DISCOVERED intent filter on a dedicated activity, and from
-         Android 17 that activity must also hold
-         android:permission="android.permission.DISPATCH_NFC_MESSAGE"
-         (ADR 0009). nfc_manager reads no launch intent at all, so none of that
-         belongs here yet. -->
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
          https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.

@@ -46,6 +46,39 @@ class _FakeLookup implements ScanLookup {
       tasks.where((task) => task.targetId == targetId).toList();
 }
 
+/// The repeat window's anchor, in memory rather than in `sync_state`.
+///
+/// A map is the whole of what the resolver needs from a store, which is the
+/// point of the interface: "the window survives the process" is decided here,
+/// with no database and no phone.
+class _FakeRepeatStore implements ScanRepeatStore {
+  _FakeRepeatStore([this.anchor]);
+
+  ScanRepeatAnchor? anchor;
+
+  int reads = 0;
+  int writes = 0;
+  int clears = 0;
+
+  @override
+  Future<ScanRepeatAnchor?> read() async {
+    reads++;
+    return anchor;
+  }
+
+  @override
+  Future<void> write(ScanRepeatAnchor anchor) async {
+    writes++;
+    this.anchor = anchor;
+  }
+
+  @override
+  Future<void> clear() async {
+    clears++;
+    anchor = null;
+  }
+}
+
 final _epoch = DateTime(2026, 6, 15, 10);
 
 Target _target(String id, String name) =>
@@ -501,7 +534,7 @@ void main() {
       'reset forgets it, so raising the camera again always scans',
       () async {
         await resolver.resolve(labelUriFor(boiler.id), now: _epoch);
-        resolver.reset();
+        await resolver.reset();
         final again = await resolver.resolve(
           labelUriFor(boiler.id),
           now: _epoch.add(const Duration(seconds: 1)),
@@ -531,6 +564,132 @@ void main() {
           now: _epoch.add(const Duration(seconds: 6)),
         ),
         isA<ScanOneTaskDue>(),
+      );
+    });
+  });
+
+  group('the repeat window across a cold launch', () {
+    late _FakeLookup lookup;
+    final boiler = _target('target-1', 'The boiler');
+
+    setUp(() {
+      lookup = _FakeLookup(
+        targets: [boiler],
+        bindings: [
+          _binding(
+            targetId: boiler.id,
+            kind: BindingKind.tag,
+            value: boiler.id,
+          ),
+        ],
+        tasks: [
+          _task(id: 'a', title: 'Bleed it', targetId: boiler.id, dueInDays: -2),
+        ],
+      );
+    });
+
+    Future<ScanOutcome> tap(ScanResolver resolver, DateTime now) => resolver
+        .resolve(labelUriFor(boiler.id), reader: ScanReader.nfc, now: now);
+
+    test(
+      'an accepted scan is written down, so it outlives the process',
+      () async {
+        final store = _FakeRepeatStore();
+        final resolver = ScanResolver(lookup, repeats: store);
+
+        await tap(resolver, _epoch);
+
+        expect(store.writes, 1);
+        expect(store.anchor?.targetId, boiler.id);
+        expect(store.anchor?.at, _epoch);
+      },
+    );
+
+    test('a fresh resolver reads the window back and swallows the second '
+        'tap', () async {
+      // The case a tag can produce and a camera cannot: nem was launched by the
+      // first tap, killed, and launched again by the second one (#9). The
+      // resolver below has never seen a scan in its life.
+      final store = _FakeRepeatStore(
+        ScanRepeatAnchor(targetId: boiler.id, at: _epoch),
+      );
+      final resolver = ScanResolver(lookup, repeats: store);
+
+      final outcome = await tap(
+        resolver,
+        _epoch.add(const Duration(seconds: 10)),
+      );
+
+      expect(outcome, isA<ScanRepeat>());
+      expect((outcome as ScanRepeat).since, const Duration(seconds: 10));
+      // And nothing was rewritten: the window is anchored on the first tap, not
+      // slid forward by the taps it swallows.
+      expect(store.writes, 0);
+    });
+
+    test('a stored window older than thirty seconds lets the scan '
+        'through', () async {
+      final store = _FakeRepeatStore(
+        ScanRepeatAnchor(targetId: boiler.id, at: _epoch),
+      );
+      final resolver = ScanResolver(lookup, repeats: store);
+
+      final outcome = await tap(
+        resolver,
+        _epoch.add(const Duration(seconds: 31)),
+      );
+
+      expect(outcome, isA<ScanOneTaskDue>());
+      expect(store.anchor?.at, _epoch.add(const Duration(seconds: 31)));
+    });
+
+    test('a stored window for another target is not this one', () async {
+      final store = _FakeRepeatStore(
+        ScanRepeatAnchor(targetId: 'somewhere-else', at: _epoch),
+      );
+      final resolver = ScanResolver(lookup, repeats: store);
+
+      expect(
+        await tap(resolver, _epoch.add(const Duration(seconds: 1))),
+        isA<ScanOneTaskDue>(),
+      );
+    });
+
+    test('the store is read once, not on every scan', () async {
+      final store = _FakeRepeatStore();
+      final resolver = ScanResolver(lookup, repeats: store);
+
+      await tap(resolver, _epoch);
+      await tap(resolver, _epoch.add(const Duration(seconds: 40)));
+
+      expect(store.reads, 1);
+    });
+
+    test('reset clears what was written down as well', () async {
+      final store = _FakeRepeatStore();
+      final resolver = ScanResolver(lookup, repeats: store);
+
+      await tap(resolver, _epoch);
+      await resolver.reset();
+
+      expect(store.clears, 1);
+      expect(store.anchor, isNull);
+      // And the cleared window is not read back in from underneath.
+      expect(
+        await tap(resolver, _epoch.add(const Duration(seconds: 1))),
+        isA<ScanOneTaskDue>(),
+      );
+    });
+
+    test('no store at all still behaves exactly as it always did', () async {
+      // Every caller that cannot be cold-launched by a scan passes nothing, and
+      // nothing about the window changes for them.
+      final resolver = ScanResolver(lookup);
+
+      await tap(resolver, _epoch);
+      expect(
+        await tap(resolver, _epoch.add(const Duration(seconds: 1))),
+        isA<ScanRepeat>(),
       );
     });
   });

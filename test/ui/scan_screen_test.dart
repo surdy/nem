@@ -15,9 +15,11 @@ import 'package:nem/src/domain/completion.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/domain/target.dart';
 import 'package:nem/src/nfc/tag_gateway.dart';
+import 'package:nem/src/nfc/tag_launch.dart';
 import 'package:nem/src/ui/scan_screen.dart';
 
 import '../nfc/fake_tag_gateway.dart';
+import '../nfc/fake_tag_launch_gateway.dart';
 import '../notifications/fake_reminder_notifier.dart';
 
 void main() {
@@ -39,6 +41,11 @@ void main() {
   /// The NFC hardware, in software: the second reader this screen owns.
   late FakeTagGateway tags;
 
+  /// Android's tap-to-launch, which this screen does not use and does report
+  /// on: it is the one place the state of the NFC hardware is mentioned, and a
+  /// tag that cannot open nem is part of that state (#9).
+  late FakeTagLaunchGateway launches;
+
   setUp(() async {
     db = NemDatabase(NativeDatabase.memory());
     targets = TargetRepository(db);
@@ -48,6 +55,8 @@ void main() {
     boiler = await targets.createTarget(name: 'The boiler');
     haptics = [];
     tags = FakeTagGateway();
+    launches = FakeTagLaunchGateway();
+    addTearDown(launches.dispose);
   });
 
   tearDown(() => db.close());
@@ -77,6 +86,7 @@ void main() {
           nowProvider.overrideWithValue(clock),
           clockProvider.overrideWithValue(() => clock),
           tagGatewayProvider.overrideWithValue(tags),
+          tagLaunchGatewayProvider.overrideWithValue(launches),
         ],
         child: MaterialApp(
           home: Builder(
@@ -508,6 +518,46 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(tags.reading, isFalse);
+      await unmount(tester);
+    });
+
+    testWidgets('a tag that cannot open nem says so, and offers the only '
+        'screen that can undo it', (tester) async {
+      // Android 16 asks once, ever, and remembers a "no" permanently — and its
+      // symptom is that tapping a tag does nothing at all, which is
+      // indistinguishable from not having tapped one (#9, ADR 0009).
+      launches.preferenceValue = TagLaunchPreference.disallowed;
+      await pumpScan(tester);
+
+      expect(
+        find.byKey(const ValueKey('tag-launch-disallowed')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('allow-tag-launch')));
+      await tester.pumpAndSettle();
+
+      // nem cannot re-prompt; only the system screen can.
+      expect(launches.preferenceScreensShown, 1);
+      await unmount(tester);
+    });
+
+    testWidgets('and says nothing at all when it can', (tester) async {
+      launches.preferenceValue = TagLaunchPreference.allowed;
+      await pumpScan(tester);
+
+      expect(find.byKey(const ValueKey('tag-launch-disallowed')), findsNothing);
+      await unmount(tester);
+    });
+
+    testWidgets('an iPhone is never asked, because it never launches from a '
+        'tag', (tester) async {
+      // ADR 0009's deliberate half: iOS requires nem to be open first, so there
+      // is no launch preference to report and nothing to put on screen.
+      tags.presentation = TagSessionPresentation.systemSheet;
+      launches.preferenceValue = TagLaunchPreference.unsupported;
+      await pumpScan(tester);
+
+      expect(find.byKey(const ValueKey('tag-launch-disallowed')), findsNothing);
       await unmount(tester);
     });
   });

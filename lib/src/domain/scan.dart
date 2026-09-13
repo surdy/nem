@@ -184,6 +184,44 @@ abstract interface class ScanLookup {
 /// How long a second scan of the same target is ignored for (PLAN.md).
 const scanRepeatWindow = Duration(seconds: 30);
 
+/// What the repeat window is anchored on: the target a scan was last accepted
+/// for, and when it was accepted.
+class ScanRepeatAnchor {
+  const ScanRepeatAnchor({required this.targetId, required this.at});
+
+  final String targetId;
+
+  /// The moment the scan was accepted, as an instant. Only ever subtracted
+  /// from another reading of the same clock — never a calendar date.
+  final DateTime at;
+
+  @override
+  String toString() => 'ScanRepeatAnchor($targetId at $at)';
+}
+
+/// Where the repeat window's anchor is kept so that it outlives the process.
+///
+/// An in-memory window is enough while nem stays running, and is not enough on
+/// Android: a tag can launch nem from closed (#9), so the process that accepted
+/// the first tap may be gone by the time the second tap arrives — and thirty
+/// seconds is long enough for the OS to have reclaimed it. A window that only
+/// lived in the resolver would then let a fumbled second tap complete the same
+/// work twice, which is the one thing it exists to prevent.
+///
+/// An interface here, with drift behind it, for the same reason [ScanLookup] is
+/// one: the resolver stays a decision, and the window is exercised against a
+/// map.
+abstract interface class ScanRepeatStore {
+  /// The last accepted scan, or null when there is none to speak of.
+  Future<ScanRepeatAnchor?> read();
+
+  /// Records [anchor] as the last accepted scan, replacing whatever was there.
+  Future<void> write(ScanRepeatAnchor anchor);
+
+  /// Forgets the anchor, so the next scan of any target is accepted.
+  Future<void> clear();
+}
+
 /// Turns a scanned string into a decision.
 ///
 /// This is the whole resolution flow, and it is deliberately the only part of
@@ -197,15 +235,30 @@ const scanRepeatWindow = Duration(seconds: 30);
 /// The clock arrives as an argument rather than being read here, so the repeat
 /// window can be exercised without waiting thirty seconds.
 class ScanResolver {
-  ScanResolver(this._lookup, {this.repeatWindow = scanRepeatWindow});
+  ScanResolver(
+    this._lookup, {
+    this.repeatWindow = scanRepeatWindow,
+    this.repeats,
+  });
 
   final ScanLookup _lookup;
+
+  /// Where the window's anchor is kept between processes, or null to keep it
+  /// only in memory — which is every caller that cannot be cold-launched by a
+  /// scan, and every test that is not about surviving one.
+  final ScanRepeatStore? repeats;
 
   /// How long after an accepted scan the same target is ignored for.
   final Duration repeatWindow;
 
   String? _lastTargetId;
   DateTime? _lastAcceptedAt;
+
+  /// The one read of [repeats], memoised: the anchor is loaded on the first
+  /// resolve and kept in memory from then on. A [Future] rather than a flag so
+  /// two scans arriving together wait for the same read instead of racing past
+  /// it — which is exactly the fumbled double tap the window is for.
+  Future<void>? _loaded;
 
   /// Resolves [raw], read through [reader], as at [now].
   Future<ScanOutcome> resolve(
@@ -222,7 +275,7 @@ class ScanResolver {
     final target = await _lookup.findTarget(binding.targetId);
     if (target == null) return ScanUnknownCode(code);
 
-    final since = _sinceLastScanOf(target.id, now);
+    final since = await _sinceLastScanOf(target.id, now);
     if (since != null && since < repeatWindow) {
       return ScanRepeat(target: target, since: since);
     }
@@ -233,6 +286,11 @@ class ScanResolver {
     // window pointed at one label would never re-open.
     _lastTargetId = target.id;
     _lastAcceptedAt = now;
+    // Written before the outcome is returned, and awaited: the outcome is what
+    // completes the work, and a window armed after that would be armed after
+    // the process could already have been killed and re-launched by a second
+    // tap on the same tag.
+    await repeats?.write(ScanRepeatAnchor(targetId: target.id, at: now));
 
     final due = tasksDueAt(await _lookup.tasksForTarget(target.id), now);
     return switch (due.length) {
@@ -246,10 +304,26 @@ class ScanResolver {
   ///
   /// The scan screen calls this when it opens: deliberately raising the camera
   /// again is a new intention, and it should not be swallowed because the same
-  /// label was scanned twenty seconds ago.
-  void reset() {
+  /// label was scanned twenty seconds ago. The stored anchor goes with it, or
+  /// the next launch would read back the window this call just dropped.
+  Future<void> reset() async {
     _lastTargetId = null;
     _lastAcceptedAt = null;
+    // Nothing left to load: a read after this would restore what is being
+    // deliberately forgotten.
+    _loaded = Future<void>.value();
+    await repeats?.clear();
+  }
+
+  /// Loads the stored anchor, once.
+  Future<void> _load() => _loaded ??= _read();
+
+  Future<void> _read() async {
+    final anchor = await repeats?.read();
+    // A scan accepted while the read was in flight is the newer answer.
+    if (anchor == null || _lastAcceptedAt != null) return;
+    _lastTargetId = anchor.targetId;
+    _lastAcceptedAt = anchor.at;
   }
 
   /// How long ago [targetId] was last accepted, or null if it was not the last
@@ -258,7 +332,8 @@ class ScanResolver {
   /// A [Duration] is right here and calendar arithmetic is not: this is elapsed
   /// time between two readings of the clock, thirty seconds apart, not a span
   /// of calendar days. Days go through `calendarDaysBetween`; seconds do not.
-  Duration? _sinceLastScanOf(String targetId, DateTime now) {
+  Future<Duration?> _sinceLastScanOf(String targetId, DateTime now) async {
+    await _load();
     final at = _lastAcceptedAt;
     if (at == null || _lastTargetId != targetId) return null;
     final since = now.difference(at);

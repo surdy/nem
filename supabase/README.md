@@ -113,6 +113,25 @@ there is no reason to let them.
 
 ---
 
+## Realtime
+
+A change made on one phone appears on the other while both are open, rather than
+on the next foreground. That needs one thing on this side, and
+`migrations/20260913200000_realtime_publication.sql` is it: the six synced tables
+have to be members of the `supabase_realtime` publication, which is what the
+dashboard's **Database → Replication** page toggles. Apply the migration — or
+tick the six tables there — and it works; skip it and nem is exactly the app it
+was before, syncing on foreground and on its retry timer. It is dated last of the
+migrations because it names every synced table and so wants them all to exist;
+re-run it after any later file that adds one.
+
+nem never reads what the subscription delivers. The message means "something
+changed" and the ordinary cursored pull is what fetches it, so there is no
+`replica identity full` to set, nothing extra in the WAL, and no second way for
+a row to reach the device. `lib/src/sync/sync_channel.dart` has the argument.
+
+---
+
 ## Checking it works
 
 In nem on the first device, **Settings → Sync** should show your email and

@@ -68,7 +68,21 @@ class _NemAppState extends ConsumerState<NemApp> {
   @override
   void initState() {
     super.initState();
-    _lifecycle = AppLifecycleListener(onResume: _onResume);
+    _lifecycle = AppLifecycleListener(onResume: _onResume, onPause: _onPause);
+
+    // Opens the realtime subscription, and opens a new one whenever the backend
+    // underneath it changes: a URL typed into the settings screen or a sign-in
+    // rebuilds the provider, and the instance being replaced closes its own
+    // channel as it is disposed. `fireImmediately` is what starts the
+    // subscription on a device that launched already configured; on every other
+    // device this resolves to a `RealtimeSync` with no channel, which does
+    // nothing at all (ADR 0001). The subscription is closed with the rest of
+    // this widget's manual listeners when it is disposed.
+    ref.listenManual(
+      realtimeSyncProvider,
+      (_, realtime) => unawaited(realtime.start()),
+      fireImmediately: true,
+    );
   }
 
   /// Everything that has to catch up with the world after nem was away.
@@ -101,7 +115,27 @@ class _NemAppState extends ConsumerState<NemApp> {
     // this is safe to call unconditionally and why nothing here is awaited —
     // the foreground must not wait on a network.
     unawaited(ref.read(syncStatusProvider.notifier).sync());
+
+    // And re-opens the realtime subscription that going into the background
+    // closed, so a change made on the other phone while this one is on screen
+    // arrives without waiting for the next foreground (#13).
+    unawaited(ref.read(realtimeSyncProvider).start());
   }
+
+  /// Lets go of the realtime subscription when nem goes into the background.
+  ///
+  /// The same listener as [_onResume] rather than a third one, because it is
+  /// the same idea from the other side: the process is about to stop noticing
+  /// the world, and a socket nothing is reading is a socket worth closing. Both
+  /// platforms suspend it within moments anyway, and a channel that has been
+  /// quietly dead for a day is worse than no channel at all — it looks open and
+  /// delivers nothing.
+  ///
+  /// Nothing is missed by having been away. The subscription was never the
+  /// record of what changed; the cursor is (CONTEXT.md — "Cursor"), so the
+  /// resume above pulls everything that happened in the meantime, and the
+  /// rejoin pulls again for good measure.
+  void _onPause() => unawaited(ref.read(realtimeSyncProvider).stop());
 
   @override
   void dispose() {

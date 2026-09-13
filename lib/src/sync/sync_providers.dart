@@ -3,8 +3,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../app/providers.dart';
 import 'outbox_store.dart';
+import 'realtime_sync.dart';
 import 'supabase_connection.dart';
+import 'supabase_sync_channel.dart';
 import 'supabase_sync_transport.dart';
+import 'sync_channel.dart';
 import 'sync_controller.dart';
 import 'sync_engine.dart';
 import 'sync_settings.dart';
@@ -52,6 +55,42 @@ final supabaseClientProvider = FutureProvider<SupabaseClient?>((ref) async {
 final syncTransportProvider = Provider<SyncTransport?>((ref) {
   final client = ref.watch(supabaseClientProvider).value;
   return client == null ? null : SupabaseSyncTransport(client);
+});
+
+/// The realtime subscription, or null when there is nowhere to subscribe to.
+///
+/// The second seam tests replace, alongside [syncTransportProvider] — see
+/// [SyncChannel], which carries why realtime is a doorbell rather than a second
+/// way into the database.
+final syncChannelProvider = Provider<SyncChannel?>((ref) {
+  final client = ref.watch(supabaseClientProvider).value;
+  if (client == null) return null;
+  return SupabaseSyncChannel(
+    client,
+    // Whatever sync moves, realtime listens to. Registering a table in
+    // `defaultSyncedTables` stays the whole job of adding it.
+    tables: [
+      for (final table in defaultSyncedTables(ref.watch(databaseProvider)))
+        table.name,
+    ],
+  );
+});
+
+/// Turns "the backend changed" into the same sync every other trigger runs.
+///
+/// Held open by `app.dart`, which starts it on the first build and on every
+/// foreground, and stops it when nem goes into the background. Rebuilt whenever
+/// the backend changes underneath it, which disposes — and so closes — the
+/// subscription that was pointed at the old one.
+final realtimeSyncProvider = Provider<RealtimeSync>((ref) {
+  final realtime = RealtimeSync(
+    channel: ref.watch(syncChannelProvider),
+    // The one entry point, exactly as `app.dart` and `main.dart` use: realtime
+    // decides *when*, and never *what*.
+    pull: () => ref.read(syncStatusProvider.notifier).sync(),
+  );
+  ref.onDispose(realtime.stop);
+  return realtime;
 });
 
 final outboxStoreProvider = Provider<OutboxStore>(

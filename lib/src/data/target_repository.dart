@@ -16,6 +16,10 @@ class TargetRepository {
 
   final NemDatabase _db;
 
+  /// Every write that changes what a target row says queues it for push
+  /// (#12). A target is plain mutable state — name, description, tombstone —
+  /// so it merges by last-write-wins on `updated_at` like everything that is
+  /// not a completion (PLAN.md — Sync).
   late final OutboxStore _outbox = OutboxStore(_db);
 
   /// Live targets, alphabetically.
@@ -74,6 +78,11 @@ class TargetRepository {
             updatedAt: timestamp,
           ),
         );
+    await _outbox.enqueue(
+      _db.targets.actualTableName,
+      target.id,
+      now: timestamp,
+    );
     return target;
   }
 
@@ -98,6 +107,7 @@ class TargetRepository {
         updatedAt: Value(timestamp),
       ),
     );
+    await _outbox.enqueue(_db.targets.actualTableName, id, now: timestamp);
     return findTarget(id);
   }
 
@@ -124,9 +134,11 @@ class TargetRepository {
           updatedAt: Value(timestamp),
         ),
       );
-      // The unassignment is an edit of the *task*, so it is the task that has
-      // to be pushed — otherwise the other device keeps showing the work at a
-      // target this one has deleted (#11; targets themselves arrive in #12).
+      // The unassignment is an edit of the *task*, so the task is pushed too,
+      // and not only the target's tombstone — otherwise the other device would
+      // apply the tombstone and keep a task pointing at it, which resolves to
+      // nothing and reads as unassigned anyway (ADR 0011), but only after its
+      // own next recomputation rather than now.
       for (final task in affected) {
         await _outbox.enqueue(
           _db.tasks.actualTableName,
@@ -140,6 +152,7 @@ class TargetRepository {
           updatedAt: Value(timestamp),
         ),
       );
+      await _outbox.enqueue(_db.targets.actualTableName, id, now: timestamp);
     });
   }
 

@@ -268,11 +268,29 @@ void main() {
     expect(await TaskRepository(db).deviceId(), first);
   });
 
-  test('a completion cannot reference a task that does not exist', () async {
-    // The foreign key is enforced because `beforeOpen` turns it on.
-    await expectLater(
-      repository.recordCompletion('no-such-task'),
-      throwsA(isA<Exception>()),
+  test('a completion whose task is not here yet is kept, not refused', () async {
+    // There is no foreign key on `completions.task_id` (ADR 0011), and this is
+    // the case it was removed for: a sync pull delivers rows per table in no
+    // guaranteed order, so a completion can legitimately land before the task
+    // it records work against. With `PRAGMA foreign_keys = ON` a `REFERENCES`
+    // constraint refused that insert outright — losing the one row nem cannot
+    // reconstruct from anything else (ADR 0004).
+    final orphan = await repository.recordCompletion(
+      'a-task-this-device-has-not-pulled-yet',
+      completedAt: DateTime(2026, 3, 5, 9),
+      now: DateTime(2026, 3, 5, 9),
     );
+
+    expect(orphan.taskId, 'a-task-this-device-has-not-pulled-yet');
+    expect(
+      await repository.completionsFor('a-task-this-device-has-not-pulled-yet'),
+      hasLength(1),
+    );
+
+    // And it stays an orphan the application ignores rather than corruption:
+    // a real task's log and derived state are untouched by it.
+    final id = await filterTaskId();
+    expect(await repository.completionsFor(id), isEmpty);
+    expect(await repository.recomputeDerivedState(), 0);
   });
 }

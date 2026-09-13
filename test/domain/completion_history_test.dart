@@ -24,6 +24,9 @@ void main() {
     note: note,
     deviceId: 'device',
     createdAt: at,
+    // The invariant the repository keeps: `updated_at` is `created_at` until
+    // the row is tombstoned, and the tombstone's moment after.
+    updatedAt: tombstonedAt ?? at,
     deletedAt: tombstonedAt,
   );
 

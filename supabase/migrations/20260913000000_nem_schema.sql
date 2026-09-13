@@ -141,9 +141,10 @@ create table if not exists public.completions (
   -- dates are derived from them and cannot be reconstructed from anything
   -- else). An orphan completion is recoverable; a rejected one is not.
   --
-  -- The local `REFERENCES tasks (id)` is the mirror-image hazard and #12 will
-  -- have to deal with it: a pull can deliver a completion before its task, and
-  -- SQLite runs with `PRAGMA foreign_keys = ON`.
+  -- The local table carried the mirror-image hazard — a pull can deliver a
+  -- completion before its task, and SQLite runs with `PRAGMA foreign_keys =
+  -- ON` — and #12 dropped it there too, in the `TableMigration` at schema
+  -- version 7.
   task_id uuid not null,
   completed_at timestamptz not null,
   source text not null check (source in ('manual', 'tag', 'label', 'barcode')),
@@ -151,8 +152,23 @@ create table if not exists public.completions (
   -- Which device recorded this.
   device_id text not null,
   created_at timestamptz not null,
-  -- Tombstones a correction (ADR 0004). Completions are never updated in
-  -- place, so there is no `updated_at`: the row is immutable apart from this.
+  -- The clock sync measures this row on: equal to `created_at` until the row
+  -- is tombstoned, and the moment of the tombstone after.
+  --
+  -- Not a second way to edit a completion (ADR 0004) — nothing in nem writes
+  -- it but the tombstone, and no trigger here writes it at all. It exists
+  -- because the pull filters, orders and pages on one column and the
+  -- conditional `PATCH` compares against the same one, and a cursor on
+  -- `created_at` would never carry a tombstone across: taking a completion
+  -- back moves `deleted_at` and leaves `created_at` where it was, so the row
+  -- would sit behind the other device's cursor forever. See the column's doc
+  -- comment in `lib/src/data/database.dart`.
+  --
+  -- Append-and-merge is untouched by it: two devices' copies of one completion
+  -- carry the same `updated_at`, so neither supersedes the other.
+  updated_at timestamptz not null,
+  -- Tombstones a correction (ADR 0004). A completion is immutable apart from
+  -- this and the `updated_at` that carries it.
   deleted_at timestamptz
 );
 
@@ -161,8 +177,8 @@ create table if not exists public.completions (
 -- ---------------------------------------------------------------------------
 --
 -- The pull is `where (updated_at, id) > cursor order by updated_at, id`, so
--- every synced table wants that composite. Completions are ordered on
--- `created_at` instead: they have no `updated_at` because they are immutable.
+-- every synced table wants that composite — completions included, which is
+-- half of why they have an `updated_at` at all.
 
 create index if not exists idx_targets_updated_at
   on public.targets (updated_at, id);
@@ -170,8 +186,8 @@ create index if not exists idx_bindings_updated_at
   on public.bindings (updated_at, id);
 create index if not exists idx_tasks_updated_at
   on public.tasks (updated_at, id);
-create index if not exists idx_completions_created_at
-  on public.completions (created_at, id);
+create index if not exists idx_completions_updated_at
+  on public.completions (updated_at, id);
 
 create index if not exists idx_bindings_target_id
   on public.bindings (target_id);

@@ -10,14 +10,26 @@ import 'synced_table.dart';
 
 /// The tables sync moves.
 ///
-/// #11 is tasks only. #12 adds completions, targets and bindings by adding
-/// three entries here — see [SyncedTable] for the one column each of them has
-/// to name, and note the ordering: a table listed earlier is pulled earlier,
-/// which is a convenience and never a requirement (ADR 0011 — a row may
-/// legitimately arrive before the row it points at, and nothing in this file
-/// treats that as an error).
+/// All four of them, and the whole of what #12 had to add to the engine: the
+/// outbox, the drain, the pull, the cursor and the merge are written against
+/// [SyncedTable] rather than against any particular table, so registering one
+/// is the entire job.
+///
+/// The order is roughly parents before children — a target before the tasks and
+/// bindings that name it, a task before its completions — which is a
+/// convenience and never a requirement. A pull can legitimately deliver a row
+/// before the row it points at (ADR 0011), no table here carries a foreign key
+/// that could refuse it, and nothing in this file treats it as an error; the
+/// ordering only means the common case resolves in one sync rather than two.
+///
+/// Every one of them uses the default clock column, `updated_at`, completions
+/// included — see the column's doc comment in `data/database.dart` for why
+/// completions have one at all.
 List<SyncedTable> defaultSyncedTables(NemDatabase db) => [
+  SyncedTable(db.targets),
   SyncedTable(db.tasks),
+  SyncedTable(db.bindings),
+  SyncedTable(db.completions),
 ];
 
 /// How many rows one pull request asks for.
@@ -260,9 +272,43 @@ class SyncEngine {
     );
   }
 
+  /// Pulls one table, page by page, and remembers how far it *learned*.
+  ///
+  /// ## Why the stored cursor only moves over rows that were applied
+  ///
+  /// The clock a row is filtered and ordered on is the writing device's, not
+  /// the server's: nothing in `supabase/` computes anything and no trigger
+  /// restamps `updated_at` (ADR 0001), because the value last-write-wins
+  /// compares has to be the moment the *edit* happened. The price is that rows
+  /// do not reach the backend in clock order. A phone that spent a fortnight
+  /// offline pushes a fortnight of completions the moment it reconnects, all of
+  /// them stamped when the work was done, and they land *behind* everything the
+  /// other phone wrote in the meantime.
+  ///
+  /// So "the last row I read" is the wrong thing to remember. A device that
+  /// pushed its own rows and pulled them straight back would advance its cursor
+  /// over its own timeline and step clean over the other device's fortnight —
+  /// which is losing completions, the one thing nem cannot afford to lose
+  /// (ADR 0004), silently and permanently.
+  ///
+  /// "The last row I *applied*" is the right thing, and it is what this stores.
+  /// A device only moves its cursor when it learns something from the backend,
+  /// so a device that has learnt nothing since Tuesday still asks for
+  /// everything after Tuesday — which is exactly the window the other device
+  /// has been filling up. The cost is re-reading the rows in between on each
+  /// pull, which is one comparison per row that writes nothing.
+  ///
+  /// It is not a total order, and two devices are what it is sound for. A third
+  /// writer pushing a row older than one this device has already applied from a
+  /// *different* writer would still be stepped over. With the two devices
+  /// ADR 0003 describes, and an outbox that drains oldest-dirty first, the rows
+  /// a peer pushes arrive in its own clock order and this holds.
   Future<SyncReport> _pullTable(SyncedTable table) async {
     final codec = SyncCodec(table, _rows.types);
-    var cursor = await settings.cursor(table.name);
+    final stored = await settings.cursor(table.name);
+    // Where reading has got to, which advances over every row so that paging
+    // terminates, and what has been learnt, which is what is written down.
+    var reached = stored;
     var pulled = 0;
     var rejected = 0;
 
@@ -272,7 +318,7 @@ class SyncEngine {
         page = await transport.fetchChanges(
           table: table.name,
           clockColumn: table.clockColumn,
-          after: cursor,
+          after: reached,
           limit: pageSize,
         );
       } on SyncTransportFailure catch (failure) {
@@ -280,17 +326,21 @@ class SyncEngine {
       }
       if (page.isEmpty) break;
 
-      final before = cursor;
+      final before = reached;
+      SyncCursor? learned;
       for (final json in page) {
         final remote = _rowFrom(table, codec, json);
         if (await _apply(table, codec, remote)) {
           pulled++;
+          learned = SyncCursor.after(remote);
         } else {
           rejected++;
         }
-        cursor = SyncCursor.after(remote);
+        reached = SyncCursor.after(remote);
       }
-      await settings.writeCursor(table.name, cursor!);
+      // Written per page rather than per pull, so an interrupted pull resumes
+      // at the last row it applied rather than starting again.
+      if (learned != null) await settings.writeCursor(table.name, learned);
 
       // The cursor must have moved past every row of the page, or the next
       // request asks the same question and gets the same answer forever. It

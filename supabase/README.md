@@ -18,9 +18,11 @@ ever reads and writes rows.
 1. Create a project at <https://supabase.com/dashboard>. Any region; the free
    tier is more than enough for one person's household chores.
 2. Open **SQL Editor → New query**, paste the whole of
-   `migrations/20260913000000_nem_schema.sql`, and run it. It is idempotent —
+   `migrations/20260913000000_nem_schema.sql`, and run it, then do the same with
+   every later file in `migrations/` in filename order. They are idempotent —
    every statement is `if not exists` or `drop … if exists` first — so running
-   it twice is safe.
+   them twice is safe, and a project created before #12 is brought up to date by
+   the same paste.
 3. Do the **"Claim the account"** step below. Until you do, every request is
    refused by RLS and nem will say so.
 
@@ -129,10 +131,34 @@ specific:
 
 ## What is and is not synced
 
-#11 syncs `tasks`. Completions, targets and bindings are #12 — their tables are
-created here so the schema mirrors the device, and the app simply does not push
-or pull them yet.
+All four domain tables: `targets`, `tasks`, `bindings` and `completions`. A
+completion recorded on one phone reschedules the task on the other, and a label
+or tag provisioned on one resolves on the other.
 
 Nothing in `sync_state` or `outbox` on the device is ever uploaded. Those are
 device-local: which backend this phone points at, how far its pull has got, and
 what it still owes.
+
+`due_date` and `last_completed_at` are here, and they are *not* what the other
+device believes. They are derived caches (ADR 0004), replicated only because
+they are columns of the row; each device recomputes them from its own copy of
+the completion log after every pull. If you edit one in the Table Editor, the
+next sync on either phone will overwrite it with arithmetic.
+
+### Completions merge rather than resolve
+
+`completions` is an append-only log, which is what lets two phones that were
+both offline reconcile with no conflict resolution at all (ADR 0004). Two
+devices' copies of one completion are byte-identical and carry the same
+`updated_at`, so neither wins and neither has to.
+
+The one thing that ever changes on a completion is its tombstone — `deleted_at`,
+set when the work is taken back or corrected — and `updated_at` moves with it,
+which is the only reason that column exists. A tombstone outranks a live row
+whatever its timestamp, so taking a completion back on one phone cannot be
+undone by the other pushing its untombstoned copy.
+
+Correcting a completion writes two rows, not one: the original is tombstoned and
+a replacement is appended. Expect the table to hold rows you have "deleted" —
+that is the design, and hard-deleting one in the Table Editor would let the
+other device resurrect it on its next push.

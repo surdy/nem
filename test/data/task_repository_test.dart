@@ -37,8 +37,8 @@ void main() {
 
   tearDown(() => db.close());
 
-  test('the schema is created at version 6', () async {
-    expect(db.schemaVersion, 6);
+  test('the schema is created at version 7', () async {
+    expect(db.schemaVersion, 7);
     expect(await repository.allTasks(), isEmpty);
   });
 

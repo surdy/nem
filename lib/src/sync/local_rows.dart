@@ -8,8 +8,8 @@ import 'synced_table.dart';
 /// The repositories are the way to touch a task: they know what a schedule is,
 /// what a derived cache is and when to recompute one. Sync is the one caller
 /// that must *not* know — it moves opaque rows of whichever tables are
-/// registered, which is the difference between adding completions, targets and
-/// bindings in #12 by listing them and adding them by writing three more
+/// registered, which is the difference between #12 adding completions, targets
+/// and bindings by listing them and adding them by writing three more
 /// repositories' worth of push and pull.
 ///
 /// Everything goes through drift's `customSelect` / `customInsert` /

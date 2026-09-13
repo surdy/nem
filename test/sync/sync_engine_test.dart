@@ -146,7 +146,8 @@ void main() {
         ),
       );
       // There is no task delete in the app yet (#18 archives instead), so the
-      // tombstone is written straight into the row the way #12's will be.
+      // tombstone is written straight into the row, the way a completion's is
+      // when it is taken back.
       await db.customStatement(
         'UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ?',
         [
@@ -372,8 +373,10 @@ void main() {
         'e',
       ]);
       // Three full pages plus a short one, and no page re-read: a cursor that
-      // could not break the tie would have spun here.
-      expect(transport.fetches, 3);
+      // could not break the tie would have spun here. Counted for `tasks`
+      // alone — a pull sweeps every registered table, and the other three have
+      // nothing to say here.
+      expect(transport.fetchesFor('tasks'), 3);
 
       final again = await engine(pageSize: 2).pull();
       expect(again.pulled, 0);
@@ -428,7 +431,55 @@ void main() {
       ).pull();
 
       expect(report.isComplete, isTrue);
-      expect(stubborn.fetches, 1, reason: 'it gives up rather than spinning');
+      expect(
+        stubborn.fetchesFor('tasks'),
+        1,
+        reason: 'it gives up rather than spinning',
+      );
+    });
+
+    test('the cursor does not advance over rows this device pushed, so a '
+        'peer\'s older row still arrives', () async {
+      // The clock rows are ordered on is the *writing* device's, not the
+      // server's (ADR 0001 — nothing on the backend computes anything), so rows
+      // do not land in clock order. A phone that spent a fortnight offline
+      // pushes a fortnight of work stamped when the work was done, and it lands
+      // behind everything this phone wrote in the meantime.
+      final id = await createTask(now: DateTime(2026, 6, 10, 9));
+
+      final report = await engine().sync();
+      expect(report.pushed, 1);
+      expect(report.pulled, 0, reason: 'its own row back again taught it none');
+      expect(
+        await settings.cursor('tasks'),
+        isNull,
+        reason: 'nothing was learnt, so there is nowhere new to resume from',
+      );
+
+      // The other phone reconnects, with a task it created a week earlier.
+      transport.seed(
+        'tasks',
+        remoteTaskJson(
+          id: 'from-the-tablet',
+          title: 'Bleed the radiators',
+          updatedAt: DateTime(2026, 6, 2, 9),
+        ),
+      );
+      final second = await engine().pull();
+
+      expect(second.pulled, 1);
+      expect(
+        [for (final task in await tasks.allTasks()) task.id],
+        [id, 'from-the-tablet'],
+      );
+      expect(
+        await settings.cursor('tasks'),
+        SyncCursor(
+          clock: DateTime(2026, 6, 2, 9).toUtc(),
+          id: 'from-the-tablet',
+        ),
+        reason: 'the cursor sits at the last row it learnt from',
+      );
     });
 
     test('a failed pull keeps the cursor it had', () async {
@@ -601,7 +652,9 @@ class _StuckTransport implements SyncTransport {
   _StuckTransport(this._inner);
 
   final FakeSyncTransport _inner;
-  int fetches = 0;
+  final Map<String, int> fetchesByTable = {};
+
+  int fetchesFor(String table) => fetchesByTable[table] ?? 0;
 
   @override
   Future<List<Map<String, Object?>>> fetchChanges({
@@ -610,7 +663,7 @@ class _StuckTransport implements SyncTransport {
     required SyncCursor? after,
     required int limit,
   }) async {
-    fetches++;
+    fetchesByTable.update(table, (n) => n + 1, ifAbsent: () => 1);
     return _inner.fetchChanges(
       table: table,
       clockColumn: clockColumn,

@@ -30,8 +30,10 @@ class FakeSyncTransport implements SyncTransport {
   /// halfway.
   int? failAfterWrites;
 
-  /// Fail only once this many pages have been fetched — a pull that dies
-  /// between pages.
+  /// Fail only once this many pages of *one table* have been fetched — a pull
+  /// that dies between pages. Counted per table, because the engine now walks
+  /// four of them in one pull and "the second page" means the second page of
+  /// the table under test, not the sixth request of the sweep.
   int? failAfterFetches;
 
   /// Run before each write, so a test can have the other device change
@@ -42,6 +44,13 @@ class FakeSyncTransport implements SyncTransport {
   int updates = 0;
   int inserts = 0;
   int writes = 0;
+
+  /// Pages fetched per table. A pull sweeps every registered table, so the
+  /// total says nothing about whether one table's cursor advanced; this is
+  /// what the paging assertions are made against.
+  final Map<String, int> fetchesByTable = {};
+
+  int fetchesFor(String table) => fetchesByTable[table] ?? 0;
 
   /// The clock column each table is compared on, so the fake can rank rows the
   /// way the server would.
@@ -64,8 +73,9 @@ class FakeSyncTransport implements SyncTransport {
     required SyncCursor? after,
     required int limit,
   }) async {
-    _maybeFail(isFetch: true);
+    _maybeFail(fetchedTable: table);
     fetches++;
+    fetchesByTable.update(table, (n) => n + 1, ifAbsent: () => 1);
     clockColumns[table] = clockColumn;
 
     final rows = [
@@ -123,12 +133,12 @@ class FakeSyncTransport implements SyncTransport {
     _table(table)[id] = Map<String, Object?>.from(row);
   }
 
-  void _maybeFail({bool isFetch = false}) {
+  void _maybeFail({String? fetchedTable}) {
     final failure = this.failure;
     if (failure == null) return;
-    if (isFetch) {
+    if (fetchedTable != null) {
       final pages = failAfterFetches;
-      if (pages != null && fetches < pages) return;
+      if (pages != null && fetchesFor(fetchedTable) < pages) return;
     } else {
       final threshold = failAfterWrites;
       if (threshold != null && writes < threshold) return;

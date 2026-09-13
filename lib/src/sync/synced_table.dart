@@ -5,8 +5,9 @@ import 'package:drift/drift.dart';
 ///
 /// Registering a table is the whole of adding it to sync: the outbox, the
 /// drain, the pull, the cursor and the merge are all written against this
-/// descriptor rather than against `tasks`. #11 registers `tasks`; #12 adds the
-/// rest by adding entries to [defaultSyncedTables].
+/// descriptor rather than against `tasks`. #11 registered `tasks`; #12 added
+/// targets, bindings and completions by adding three entries to
+/// `defaultSyncedTables` and nothing else.
 ///
 /// Nothing here knows what a task *is*. The engine moves rows of columns, and
 /// the meaning of those columns stays where it already lives — in the
@@ -21,18 +22,23 @@ class SyncedTable {
 
   /// The column both the pull cursor and last-write-wins are measured on.
   ///
-  /// `updated_at` for everything mutable. Completions have no `updated_at` —
-  /// they are immutable events (ADR 0004) — so #12 will register them on
-  /// `created_at`, and the same comparison then degenerates into exactly the
-  /// "append and merge, no resolution" ADR 0004 asks for: two copies of one
-  /// completion have identical clocks, so neither supersedes the other and
-  /// both devices keep the row they already have.
+  /// `updated_at` on every registered table, completions included. #11 left
+  /// this configurable expecting completions to be registered on `created_at`,
+  /// since they are immutable events with no `updated_at` of their own
+  /// (ADR 0004) — but a cursor on `created_at` never carries a *tombstone*,
+  /// because taking a completion back moves `deleted_at` and leaves
+  /// `created_at` where it was. #12 settled it the other way: completions gained
+  /// an `updated_at` that nothing but the tombstone writes, and the column's
+  /// doc comment in `data/database.dart` carries the argument.
   ///
-  /// One thing #12 still has to settle, flagged here rather than discovered
-  /// there: tombstoning a completion moves `deleted_at` but not `created_at`,
-  /// so a cursor on `created_at` would never carry that tombstone across.
-  /// Either completions gain an `updated_at` or the cursor reads the later of
-  /// the two columns.
+  /// The field stays, because "which column is the clock" is still a property
+  /// of a table rather than a constant, and a table that legitimately wants a
+  /// different one should be able to say so here rather than in the engine.
+  ///
+  /// Whatever the column, the comparison degenerates for completions into
+  /// exactly the "append and merge, no resolution" ADR 0004 asks for: two
+  /// copies of one completion carry identical clocks, so neither supersedes the
+  /// other and both devices keep the row they already have.
   final String clockColumn;
 
   String get name => info.actualTableName;

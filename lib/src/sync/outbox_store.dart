@@ -93,18 +93,26 @@ class OutboxStore {
     return rows.length;
   }
 
+  /// Whether a row is still waiting to be pushed.
+  ///
+  /// Asked by the photo queue, which may not delete an object from Storage
+  /// until the tombstone that justifies it has actually gone up — see
+  /// `PhotoSync.drain`. Nothing in the outbox's own drain needs it.
+  Future<bool> holds(String table, String rowId) async =>
+      await _attemptsRow(table, rowId) != null;
+
   /// How many changes are waiting, live — what the settings screen shows.
   Stream<int> watchCount() =>
       _db.select(_db.outbox).watch().map((rows) => rows.length);
 
-  Future<int> _attempts(String table, String rowId) async {
-    final row =
-        await (_db.select(_db.outbox)..where(
-              (o) => o.pendingTable.equals(table) & o.rowId.equals(rowId),
-            ))
-            .getSingleOrNull();
-    return row?.attempts ?? 0;
-  }
+  Future<int> _attempts(String table, String rowId) async =>
+      (await _attemptsRow(table, rowId))?.attempts ?? 0;
+
+  Future<OutboxRow?> _attemptsRow(String table, String rowId) =>
+      (_db.select(
+            _db.outbox,
+          )..where((o) => o.pendingTable.equals(table) & o.rowId.equals(rowId)))
+          .getSingleOrNull();
 
   OutboxEntry _toEntry(OutboxRow row) => OutboxEntry(
     table: row.pendingTable,

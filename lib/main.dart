@@ -9,10 +9,11 @@ Future<void> main() async {
 
   final container = ProviderContainer();
 
-  // Derived state is recomputed on launch (PLAN.md, ADR 0004). This is an
-  // explicit launch-time call rather than drift's `beforeOpen`, which fires on
-  // every database open.
-  await container.read(taskRepositoryProvider).recomputeDueDates();
+  // Due dates and last-completed timestamps are recomputed from the completion
+  // log on launch (PLAN.md, ADR 0004), so a date change or a timezone shift
+  // since the last run cannot leave them stale. This is an explicit launch-time
+  // call rather than drift's `beforeOpen`, which fires on every database open.
+  await container.read(taskRepositoryProvider).recomputeDerivedState();
 
   runApp(
     UncontrolledProviderScope(container: container, child: const NemApp()),

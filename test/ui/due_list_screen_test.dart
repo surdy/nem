@@ -93,6 +93,61 @@ void main() {
     await unmount(tester);
   });
 
+  testWidgets('completing a task records it and offers five seconds to '
+      'undo', (tester) async {
+    await repository.createFloatingTask(
+      title: 'Replace the water filter',
+      intervalN: 4,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 1),
+    );
+
+    await pumpDueList(tester);
+    expect(find.text('10 days late'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Complete'));
+    await tester.pumpAndSettle();
+
+    // The completion is on disk, and the task has rescheduled off the back of
+    // it rather than waiting for the undo window to lapse.
+    final task = (await repository.allTasks()).single;
+    expect(task.lastCompletedAt, isNotNull);
+    expect(find.text('10 days late'), findsNothing);
+
+    expect(find.text('Completed Replace the water filter'), findsOneWidget);
+    expect(find.text('Undo'), findsOneWidget);
+    expect(
+      tester.widget<SnackBar>(find.byType(SnackBar)).duration,
+      const Duration(seconds: 5),
+    );
+
+    // Let the undo window lapse so no timer outlives the test.
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await unmount(tester);
+  });
+
+  testWidgets('undo takes the completion back', (tester) async {
+    await repository.createFloatingTask(
+      title: 'Replace the water filter',
+      intervalN: 4,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 1),
+    );
+
+    await pumpDueList(tester);
+    await tester.tap(find.byTooltip('Complete'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+
+    // Back where it started: overdue by the same ten days, no live completion.
+    expect((await repository.allTasks()).single.lastCompletedAt, isNull);
+    expect(find.text('10 days late'), findsOneWidget);
+    await unmount(tester);
+  });
+
   testWidgets('a task due today carries no late badge', (tester) async {
     await repository.createFloatingTask(
       title: 'Water the plants',

@@ -43,8 +43,11 @@ class Task {
 
   final DateTime startDate;
 
-  /// Derived cache of the most recent completion (ADR 0004). No completions
-  /// exist yet, so this is always null.
+  /// When this task was last performed.
+  ///
+  /// Derived from the completion log, not stored as truth (ADR 0004): it is
+  /// `MAX(completed_at)` over the task's completions that have not been
+  /// tombstoned, and null until the task has been completed once.
   final DateTime? lastCompletedAt;
 
   final String? reminderTime;

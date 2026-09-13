@@ -81,20 +81,52 @@ class _SectionHeading extends StatelessWidget {
   }
 }
 
-class _TaskTile extends StatelessWidget {
+/// How long the undo affordance stays on screen after a completion.
+const _undoWindow = Duration(seconds: 5);
+
+class _TaskTile extends ConsumerWidget {
   const _TaskTile({required this.task, required this.now});
 
   final Task task;
   final DateTime now;
 
+  /// Records the completion, then offers [_undoWindow] to take it back.
+  ///
+  /// Nothing is held back while the offer stands: the completion is written
+  /// immediately and the task reschedules at once, because undo is a tombstone
+  /// and a recomputation rather than a delayed commit (ADR 0004).
+  Future<void> _complete(BuildContext context, WidgetRef ref) async {
+    final repository = ref.read(taskRepositoryProvider);
+    final messenger = ScaffoldMessenger.of(context);
+    final completion = await repository.recordCompletion(task.id);
+
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Completed ${task.title}'),
+          duration: _undoWindow,
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () => repository.undoCompletion(completion),
+          ),
+        ),
+      );
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final due = task.dueDate;
     final late = due == null ? null : overdueLabel(due, now);
     final schedule = task.floatingSchedule;
 
     return ListTile(
+      leading: IconButton(
+        icon: const Icon(Icons.check_circle_outline),
+        tooltip: 'Complete',
+        onPressed: () => _complete(context, ref),
+      ),
       title: Text(task.title),
       subtitle: Text(
         [

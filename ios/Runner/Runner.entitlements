@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Core NFC. The value is TAG and only TAG: it covers reading and writing
+	     both, and the NDEF value older tutorials use is rejected at App Store
+	     validation (ITMS-90778) for anything targeting iOS 13 or later.
+
+	     This entitlement needs a paid Apple Developer Program membership. A
+	     free personal team cannot sign an app that asks for it, so the iOS
+	     build of nem is a paid-account build from here on. -->
+	<key>com.apple.developer.nfc.readersession.formats</key>
+	<array>
+		<string>TAG</string>
+	</array>
+</dict>
+</plist>

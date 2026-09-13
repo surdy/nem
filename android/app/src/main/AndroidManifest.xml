@@ -58,6 +58,20 @@
          minutes late is still a digest — so nem schedules inexactly and asks
          canScheduleExactNotifications() before using anything stronger. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- nfc_manager declares no permissions of its own, so these are nem's to
+         declare. NFC is not required: a phone without it still scans printed
+         labels with the camera, and android:required="false" is what keeps nem
+         installable on one. -->
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
+
+    <!-- Tap-to-launch from a closed app is #9, not this. It needs an
+         NDEF_DISCOVERED intent filter on a dedicated activity, and from
+         Android 17 that activity must also hold
+         android:permission="android.permission.DISPATCH_NFC_MESSAGE"
+         (ADR 0009). nfc_manager reads no launch intent at all, so none of that
+         belongs here yet. -->
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
          https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.

@@ -1,4 +1,5 @@
 import 'due_status.dart';
+import 'fixed_schedule.dart';
 import 'schedule.dart';
 
 /// Which of the two schedule modes a task uses (ADR 0005).
@@ -6,8 +7,9 @@ enum ScheduleMode { floating, fixed }
 
 /// A unit of recurring work with a schedule (CONTEXT.md — "Task").
 ///
-/// Every task has exactly one schedule. Only floating schedules exist so far;
-/// fixed schedules arrive with the RRULE editor.
+/// Every task has exactly one schedule, and it is either floating or fixed. The
+/// two are separate representations on the same record, held in mutually
+/// exclusive fields, and deliberately not unified (ADR 0005).
 class Task {
   const Task({
     required this.id,
@@ -20,6 +22,7 @@ class Task {
     this.targetId,
     this.floatingSchedule,
     this.rrule,
+    this.fixedSchedule,
     this.lastCompletedAt,
     this.reminderTime,
     this.isArchived = false,
@@ -38,8 +41,17 @@ class Task {
   /// Set when [scheduleMode] is [ScheduleMode.floating].
   final FloatingSchedule? floatingSchedule;
 
-  /// Set when [scheduleMode] is [ScheduleMode.fixed]. Unused so far.
+  /// The stored form of a fixed schedule, set when [scheduleMode] is
+  /// [ScheduleMode.fixed] (ADR 0006).
+  ///
+  /// Kept alongside [fixedSchedule] rather than replaced by it, so a rule this
+  /// build cannot parse still round-trips and can still be shown as text
+  /// instead of crashing the screen (ADR 0006).
   final String? rrule;
+
+  /// [rrule] parsed, when it could be. Null for a floating task, and also for a
+  /// fixed task whose stored rule did not parse.
+  final FixedSchedule? fixedSchedule;
 
   final DateTime startDate;
 
@@ -59,14 +71,29 @@ class Task {
   ///
   /// Derived on read from the schedule and the completion history, never stored
   /// as truth (ADR 0004). The `tasks.due_date` column is only a sort key.
+  ///
+  /// The two modes compute it differently and cannot share a formula: floating
+  /// measures forward from the last completion, fixed reads the calendar and
+  /// pins to the earliest occurrence the last completion did not cover
+  /// (ADR 0007). A fixed task's due date is therefore routinely in the past.
   DateTime? get dueDate {
-    final schedule = floatingSchedule;
-    if (scheduleMode == ScheduleMode.floating && schedule != null) {
-      return floatingDueDate(schedule, lastCompletedAt: lastCompletedAt);
+    switch (scheduleMode) {
+      case ScheduleMode.floating:
+        final schedule = floatingSchedule;
+        return schedule == null
+            ? null
+            : floatingDueDate(schedule, lastCompletedAt: lastCompletedAt);
+      case ScheduleMode.fixed:
+        final schedule = fixedSchedule;
+        return schedule == null
+            ? null
+            : fixedDueDate(schedule, lastCompletedAt: lastCompletedAt);
     }
-    // Fixed schedules are not implemented yet.
-    return null;
   }
+
+  /// The schedule's human label, e.g. "Every 3 days" or "Every Tuesday".
+  String? get scheduleLabel =>
+      floatingSchedule?.label ?? fixedSchedule?.label ?? rrule;
 
   /// The task's urgency relative to [now].
   DueStatus? dueStatusAt(DateTime now) {

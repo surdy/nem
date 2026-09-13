@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:timezone/timezone.dart' as tz;
 
 import '../data/database.dart';
 import '../data/target_repository.dart';
@@ -61,3 +62,11 @@ final targetTasksProvider = StreamProvider.family<List<Task>, String>(
 
 /// The current moment, overridable in tests.
 final nowProvider = Provider<DateTime>((ref) => DateTime.now());
+
+/// The IANA zone id a newly authored fixed schedule is anchored in (ADR 0010).
+///
+/// Reads `tz.local`, which `initialiseTimeZones` points at the device's zone on
+/// launch. It is a provider so a test can pin it, and so the zone is read once
+/// at authoring time rather than every time a due date is computed — a task
+/// created in London stays a London task after the phone lands in Tokyo.
+final zoneIdProvider = Provider<String>((ref) => tz.local.name);

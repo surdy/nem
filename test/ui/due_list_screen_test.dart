@@ -5,13 +5,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nem/src/app/providers.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/task_repository.dart';
+import 'package:nem/src/domain/fixed_schedule.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/ui/due_list_screen.dart';
+import 'package:timezone/data/latest.dart' as tz_data;
 
 void main() {
   late NemDatabase db;
   late TaskRepository repository;
   final now = DateTime(2026, 6, 15, 10, 0);
+
+  // Fixed schedules resolve their occurrences against the tz database
+  // (ADR 0010).
+  setUpAll(tz_data.initializeTimeZones);
 
   setUp(() {
     db = NemDatabase(NativeDatabase.memory());
@@ -160,6 +166,58 @@ void main() {
 
     expect(find.text('TODAY'), findsOneWidget);
     expect(find.textContaining('late'), findsNothing);
+    await unmount(tester);
+  });
+
+  testWidgets('missed occurrences collapse into a single row', (tester) async {
+    // Mondays from 25 May 2026. By Monday 15 June the 25th, the 1st and the
+    // 8th have all gone by uncompleted (ADR 0007).
+    await repository.createFixedTask(
+      title: 'Put the bins out',
+      schedule: FixedSchedule.build(
+        frequency: FixedFrequency.weekly,
+        weekdays: {DateTime.monday},
+        startDate: DateTime(2026, 5, 25),
+        zoneId: 'Europe/London',
+      ),
+    );
+
+    await pumpDueList(tester);
+
+    // One row, not three, and it is late by the distance to the FIRST miss.
+    expect(find.byType(ListTile), findsOneWidget);
+    expect(find.text('Put the bins out'), findsOneWidget);
+    expect(find.text('21 days late'), findsOneWidget);
+    expect(find.textContaining('every tuesday'), findsNothing);
+    expect(find.textContaining('every monday'), findsOneWidget);
+    await unmount(tester);
+  });
+
+  testWidgets('completing a fixed task clears the whole backlog at once', (
+    tester,
+  ) async {
+    await repository.createFixedTask(
+      title: 'Put the bins out',
+      schedule: FixedSchedule.build(
+        frequency: FixedFrequency.weekly,
+        weekdays: {DateTime.monday},
+        startDate: DateTime(2026, 5, 25),
+        zoneId: 'Europe/London',
+      ),
+    );
+
+    await pumpDueList(tester);
+    await tester.tap(find.byTooltip('Complete'));
+    await tester.pumpAndSettle();
+
+    // Still one row, and no longer overdue: the intervening misses are gone
+    // rather than queued up behind it.
+    expect(find.byType(ListTile), findsOneWidget);
+    expect(find.textContaining('late'), findsNothing);
+    expect(find.text('OVERDUE'), findsNothing);
+
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
     await unmount(tester);
   });
 }

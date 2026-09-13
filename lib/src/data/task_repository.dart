@@ -1,6 +1,8 @@
 import 'package:drift/drift.dart';
+import 'package:timezone/timezone.dart' as tz;
 
 import '../domain/completion.dart';
+import '../domain/fixed_schedule.dart';
 import '../domain/interval_unit.dart';
 import '../domain/schedule.dart';
 import '../domain/task.dart';
@@ -120,6 +122,54 @@ class TaskRepository {
             intervalN: Value(intervalN),
             intervalUnit: Value(intervalUnit),
             startDate: startDate,
+            // Written on every mutation that could invalidate it (PLAN.md).
+            dueDate: Value(task.dueDate),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          ),
+        );
+    return task;
+  }
+
+  /// Creates a task with a fixed schedule (ADR 0005).
+  ///
+  /// The schedule arrives already built rather than as loose frequency and
+  /// weekday arguments, because [FixedSchedule.encode] is what defines the
+  /// stored form and only the schedule knows it. `start_date` is written too,
+  /// mirroring the anchor: the column is not null, and it is the stand-in if a
+  /// later hand-edit ever leaves the rule without its `DTSTART` line.
+  Future<Task> createFixedTask({
+    required String title,
+    String? notes,
+    String? targetId,
+    required FixedSchedule schedule,
+    DateTime? now,
+  }) async {
+    final timestamp = now ?? DateTime.now();
+    final task = Task(
+      id: newId(),
+      title: title,
+      notes: (notes == null || notes.trim().isEmpty) ? null : notes.trim(),
+      targetId: targetId,
+      scheduleMode: ScheduleMode.fixed,
+      rrule: schedule.encode(),
+      fixedSchedule: schedule,
+      startDate: schedule.anchor,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    );
+
+    await _db
+        .into(_db.tasks)
+        .insert(
+          TasksCompanion.insert(
+            id: task.id,
+            title: task.title,
+            notes: Value(task.notes),
+            targetId: Value(task.targetId),
+            scheduleMode: ScheduleMode.fixed,
+            rrule: Value(task.rrule),
+            startDate: task.startDate,
             // Written on every mutation that could invalidate it (PLAN.md).
             dueDate: Value(task.dueDate),
             createdAt: timestamp,
@@ -276,7 +326,8 @@ class TaskRepository {
       for (final row in rows) {
         final lastCompletedAt = lastCompletions[row.id];
         final dueDate = _toDomain(row, lastCompletedAt).dueDate;
-        if (lastCompletedAt == row.lastCompletedAt && dueDate == row.dueDate) {
+        if (_sameInstant(lastCompletedAt, row.lastCompletedAt) &&
+            _sameInstant(dueDate, row.dueDate)) {
           continue;
         }
         updated++;
@@ -291,6 +342,18 @@ class TaskRepository {
       }
     });
     return updated;
+  }
+
+  /// Whether two nullable date-times name the same moment.
+  ///
+  /// `==` is not good enough here. A fixed schedule's due date is a
+  /// `TZDateTime`, whose `==` demands that the other side also be a
+  /// `TZDateTime` in the same location — and what comes back out of the column
+  /// is a plain `DateTime`. Comparing with `==` would report every fixed task
+  /// as changed on every recomputation, so nothing would ever converge.
+  static bool _sameInstant(DateTime? a, DateTime? b) {
+    if (a == null || b == null) return a == null && b == null;
+    return a.isAtSameMomentAs(b);
   }
 
   /// The latest live completion per task, as one grouped query.
@@ -360,6 +423,9 @@ class TaskRepository {
             )
           : null,
       rrule: row.rrule,
+      fixedSchedule: row.scheduleMode == ScheduleMode.fixed
+          ? _parseFixedSchedule(row)
+          : null,
       startDate: row.startDate,
       lastCompletedAt: lastCompletedAt,
       reminderTime: row.reminderTime,
@@ -367,6 +433,33 @@ class TaskRepository {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     );
+  }
+
+  /// Parses a stored fixed schedule, or gives up quietly.
+  ///
+  /// A rule this build cannot read is not an error the due list should die of:
+  /// storage is strictly more expressive than the editor (ADR 0006), so an
+  /// imported or hand-edited rule can legitimately be unreadable here. The task
+  /// keeps its raw `rrule` text and simply has no due date until something can
+  /// read it. Showing such a rule as read-only text is issue #4.
+  FixedSchedule? _parseFixedSchedule(TaskRow row) {
+    final stored = row.rrule;
+    if (stored == null) return null;
+    try {
+      final schedule = FixedSchedule.parse(
+        stored,
+        defaultAnchor: row.startDate,
+        defaultZoneId: tz.local.name,
+      );
+      // Resolve the zone now. A zone id the bundled tzdata has never heard of
+      // would otherwise throw from inside the due list, one lazy field deep.
+      schedule.location;
+      return schedule;
+    } on FormatException {
+      return null;
+    } on tz.LocationNotFoundException {
+      return null;
+    }
   }
 
   Completion _toCompletion(CompletionRow row) => Completion(

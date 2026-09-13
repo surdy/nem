@@ -11,7 +11,7 @@ part 'database.g.dart';
 ///
 /// The floating columns (`interval_n`, `interval_unit`) and the fixed column
 /// (`rrule`) are mutually exclusive nullable sets, deliberately not unified
-/// (ADR 0005). `rrule` is present but unused until fixed schedules land.
+/// (ADR 0005).
 @DataClassName('TaskRow')
 @TableIndex(name: 'idx_tasks_due_date', columns: {#dueDate})
 @TableIndex(name: 'idx_tasks_deleted_at', columns: {#deletedAt})
@@ -35,7 +35,12 @@ class Tasks extends Table {
   IntColumn get intervalN => integer().nullable()();
   TextColumn get intervalUnit => textEnum<IntervalUnit>().nullable()();
 
-  // Fixed only.
+  /// Fixed only: an RFC 5545 `DTSTART` line and an `RRULE` line (ADR 0006).
+  ///
+  /// The `DTSTART` carries the wall-clock anchor and the IANA zone id that
+  /// ADR 0010 requires, which is why this one text column is the whole fixed
+  /// representation and there is no separate zone column to migrate to. See
+  /// `FixedSchedule.encode`.
   TextColumn get rrule => text().nullable()();
 
   DateTimeColumn get startDate => dateTime()();

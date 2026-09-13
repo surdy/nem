@@ -7,6 +7,7 @@ import '../domain/completion_history.dart';
 import '../domain/due_status.dart';
 import '../domain/task.dart';
 import 'due_list_screen.dart' show formatDueDate;
+import 'fixed_schedule_editor.dart' show UneditableRule;
 
 /// A task and everything its completion log says about it.
 ///
@@ -78,15 +79,24 @@ class _Schedule extends StatelessWidget {
     final theme = Theme.of(context);
     final due = task.dueDate;
     final late = due == null ? null : overdueLabel(due, now);
-    final schedule = task.floatingSchedule;
+    final fixed = task.fixedSchedule;
+    // A rule nem cannot say in words is shown as itself below rather than
+    // described here, so the heading is never a paraphrase of something that
+    // was not understood (ADR 0006).
+    final label =
+        task.floatingSchedule?.label ??
+        (fixed != null && fixed.isEditable ? fixed.label : null);
+    final storedRule = task.scheduleMode == ScheduleMode.fixed && label == null
+        ? task.rrule
+        : null;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (schedule != null)
-            Text(schedule.label, style: theme.textTheme.titleMedium),
+          if (label != null) Text(label, style: theme.textTheme.titleMedium),
+          if (storedRule != null) UneditableRule(rule: storedRule),
           if (due != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),

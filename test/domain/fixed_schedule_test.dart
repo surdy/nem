@@ -44,8 +44,8 @@ String date(DateTime value) =>
 
 /// The first [count] occurrence dates, as `yyyy-mm-dd`.
 ///
-/// Always bounded: [FixedSchedule.occurrencesFrom] is endless for every rule
-/// the editor can author, so nothing may drain it.
+/// Always bounded: [FixedSchedule.occurrencesFrom] is endless for a rule with
+/// no end condition, so nothing may drain it.
 List<String> dates(FixedSchedule schedule, DateTime from, int count) =>
     schedule.occurrencesFrom(from).take(count).map(date).toList();
 
@@ -186,8 +186,9 @@ void main() {
     });
 
     test('weekdays are ignored by the frequencies that cannot use them', () {
-      // Day-of-month and nth-weekday are issue #4; a monthly rule here simply
-      // repeats on the anchor's day of the month.
+      // A weekly rule's weekday set says nothing to a monthly one, which takes
+      // its shape from `monthlyOn` instead and here keeps the anchor's day of
+      // the month.
       final schedule = FixedSchedule.build(
         frequency: FixedFrequency.monthly,
         weekdays: {DateTime.tuesday},
@@ -427,8 +428,7 @@ void main() {
     });
 
     test('is null once a bounded rule has run out', () {
-      // COUNT cannot be authored by the minimal editor, but it can reach
-      // storage (ADR 0006), so the engine has to survive it.
+      // The same as an `EndsAfter` end condition, written by hand.
       final schedule = FixedSchedule.parse(
         'DTSTART;TZID=Europe/London:20260106T000000\n'
         'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=2',
@@ -586,13 +586,14 @@ void main() {
       expect(every(FixedFrequency.daily, DateTime(2026)).label, 'Every day');
       expect(
         every(FixedFrequency.monthly, DateTime(2026), interval: 3).label,
-        'Every 3 months',
+        'Every 3 months on the 1st',
       );
       expect(every(FixedFrequency.yearly, DateTime(2026)).label, 'Every year');
     });
 
     test('shows a rule the editor cannot author as itself', () {
-      // Rather than describing it wrongly. Presenting it properly is issue #4.
+      // Rather than describing it wrongly: the weekday is not the anchor's, so
+      // the editor could not have written this and cannot rewrite it.
       final schedule = FixedSchedule.parse(
         'RRULE:FREQ=MONTHLY;BYDAY=1MO',
         defaultAnchor: DateTime(2026),

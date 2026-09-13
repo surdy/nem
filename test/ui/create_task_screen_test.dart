@@ -12,6 +12,14 @@ import 'package:nem/src/domain/task.dart';
 import 'package:nem/src/ui/create_task_screen.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 
+/// The day the form starts on, which is whichever day the suite runs.
+DateTime today() {
+  final now = DateTime.now();
+  return DateTime(now.year, now.month, now.day);
+}
+
+String capitalised(String text) => text[0].toUpperCase() + text.substring(1);
+
 void main() {
   late NemDatabase db;
 
@@ -53,6 +61,17 @@ void main() {
     await tester.tap(find.text('Fixed'));
     await tester.pumpAndSettle();
   }
+
+  Future<void> chooseFrequency(WidgetTester tester, String label) async {
+    await tester.tap(find.byType(DropdownButtonFormField<FixedFrequency>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(label).last);
+    await tester.pumpAndSettle();
+  }
+
+  /// The plain-language rule the form is showing.
+  String summary(WidgetTester tester) =>
+      tester.widget<Text>(find.byKey(const ValueKey('schedule-summary'))).data!;
 
   bool isWeekdaySelected(WidgetTester tester, int weekday) => tester
       .widget<FilterChip>(find.byKey(ValueKey('weekday-$weekday')))
@@ -179,8 +198,8 @@ void main() {
     await tester.tap(find.text('months').last);
     await tester.pumpAndSettle();
 
-    // Day-of-month and nth-weekday are issue #4, so a monthly rule has nothing
-    // to pick here.
+    // A monthly rule picks its shape from a dropdown instead; the weekday
+    // chips are a weekly rule's `BYDAY` and mean nothing to it.
     expect(
       find.byKey(const ValueKey('weekday-${DateTime.tuesday}')),
       findsNothing,
@@ -233,8 +252,113 @@ void main() {
 
     final task = (await TaskRepository(db).allTasks()).single;
     expect(task.rrule, endsWith('RRULE:FREQ=MONTHLY'));
-    expect(task.fixedSchedule?.label, 'Every month');
+    // The day of the month is the start date's, which is today: the form is
+    // created on whatever day the suite happens to run.
+    expect(task.fixedSchedule?.label, startsWith('Every month on the '));
     expect(task.dueDate!.day, task.startDate.day);
+    await unmount(tester);
+  });
+
+  testWidgets('shows the rule it is building in plain language', (
+    tester,
+  ) async {
+    await pumpForm(tester);
+    await chooseFixed(tester);
+    await selectWeekdays(tester, {DateTime.tuesday});
+    await tester.enterText(find.widgetWithText(TextFormField, '3'), '1');
+    await tester.pumpAndSettle();
+    expect(summary(tester), 'Every Tuesday');
+
+    await tester.enterText(find.widgetWithText(TextFormField, '1'), '2');
+    await tester.pumpAndSettle();
+    expect(summary(tester), 'Every 2 weeks on Tuesday');
+    await unmount(tester);
+  });
+
+  testWidgets('creates a monthly fixed task on an nth weekday', (tester) async {
+    // The form starts on today, so the shape it offers depends on the day the
+    // suite runs: the third Tuesday in one month, the last Friday in another.
+    // The draft says which, rather than the test recomputing it.
+    final expected = FixedScheduleDraft(
+      frequency: FixedFrequency.monthly,
+      monthlyOn: MonthlyOn.nthWeekday,
+      startDate: today(),
+      zoneId: 'Europe/London',
+    );
+
+    await pumpForm(tester);
+    await tester.enterText(find.byType(TextFormField).first, 'Pay the cleaner');
+    await chooseFixed(tester);
+    await chooseFrequency(tester, 'months');
+    await tester.enterText(find.widgetWithText(TextFormField, '3'), '1');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(DropdownButtonFormField<MonthlyOn>));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find
+          .text(
+            capitalised(expected.monthlyClause(expected.effectiveMonthlyOn)),
+          )
+          .last,
+    );
+    await tester.pumpAndSettle();
+
+    expect(summary(tester), expected.summary);
+    await tester.tap(find.text('Create task'));
+    await tester.pumpAndSettle();
+
+    final task = (await TaskRepository(db).allTasks()).single;
+    expect(task.rrule, expected.toSchedule().encode());
+    expect(task.rrule, contains('BYDAY='));
+    expect(task.fixedSchedule?.draft, expected);
+    expect(task.dueDate, isNotNull);
+    await unmount(tester);
+  });
+
+  testWidgets('creates a fixed task that ends after a count', (tester) async {
+    await pumpForm(tester);
+    await tester.enterText(find.byType(TextFormField).first, 'Water the ferns');
+    await chooseFixed(tester);
+    await selectWeekdays(tester, {DateTime.monday});
+    await tester.enterText(find.widgetWithText(TextFormField, '3'), '1');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('After'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('end-count')), '4');
+    await tester.pumpAndSettle();
+    expect(summary(tester), 'Every Monday, for 4 occurrences');
+
+    await tester.tap(find.text('Create task'));
+    await tester.pumpAndSettle();
+
+    final task = (await TaskRepository(db).allTasks()).single;
+    expect(task.rrule, contains('COUNT=4'));
+    expect(task.fixedSchedule?.draft?.end, const EndsAfter(4));
+    expect(task.scheduleLabel, 'Every Monday, for 4 occurrences');
+    await unmount(tester);
+  });
+
+  testWidgets('creates a fixed task that ends on a date', (tester) async {
+    await pumpForm(tester);
+    await tester.enterText(find.byType(TextFormField).first, 'Chase the audit');
+    await chooseFixed(tester);
+    await selectWeekdays(tester, {DateTime.thursday});
+
+    await tester.tap(find.text('On date'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Create task'));
+    await tester.pumpAndSettle();
+
+    // A year out from the start date, which is the default the editor offers.
+    final start = today();
+    final task = (await TaskRepository(db).allTasks()).single;
+    expect(
+      task.fixedSchedule?.draft?.end,
+      EndsOnDate(DateTime(start.year + 1, start.month, start.day)),
+    );
+    expect(task.rrule, contains('UNTIL='));
     await unmount(tester);
   });
 

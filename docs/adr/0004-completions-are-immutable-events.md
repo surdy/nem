@@ -1,7 +1,7 @@
 # Completions are immutable events; schedule state is derived
 
 A completion records that a task was performed at a moment in time and is never
-updated in place, only appended. `next_due_at` and `last_completed_at` are caches
+updated in place, only appended. `due_date` and `last_completed_at` are caches
 derived from that event log on each device, not authoritative values that sync.
 
 Append-only sets merge without conflict, so two devices can both record work

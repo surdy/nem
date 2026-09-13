@@ -12,6 +12,14 @@ rows per table in no guaranteed order (ADR 0002), so a task can legitimately
 arrive before the target it points at — a constraint would reject a pull that is
 perfectly valid and leave the device permanently unable to converge.
 
+The same applies to `completions.task_id`, and more sharply. A completion can
+reach the server before the task it belongs to, so the Postgres table carries no
+constraint — but the **local** table does, with `PRAGMA foreign_keys = ON`, which
+means a pull that delivers a completion before its task will fail the insert
+outright. Completions are the one thing nem cannot afford to lose (ADR 0004), so
+that local constraint has to go: SQLite cannot drop a foreign key in place, so it
+takes a `TableMigration` that recreates `completions` and copies every row.
+
 ## Consequences
 
 Referential integrity for this column is the application's job: a `target_id`

@@ -96,6 +96,35 @@ Creating a code and binding it to a target — writing a blank tag, generating a
 label, or binding an existing barcode.
 _Avoid_: pairing, registering, enrolling, setup
 
+### Sync
+
+**Sync**:
+Reconciling this device's data with the backend, in both directions. Never a
+source of truth — the local database is authoritative and the backend is a
+replica.
+_Avoid_: replication, backup, cloud
+
+**Backend**:
+The Supabase instance a device is pointed at, whether hosted or self-hosted.
+Identified by its URL, which is a setting rather than a build-time constant.
+_Avoid_: server, cloud, remote, API
+
+**Outbox**:
+The set of local rows changed since they were last pushed. A dirty set, not a
+log of edits: it names rows, and the push reads each row's current state, so
+five offline edits to one row cost one entry.
+_Avoid_: queue, pending changes, journal
+
+**Cursor**:
+How far a table's pull has reached, as the last `(updated_at, id)` pair seen.
+The id is part of it because two rows can share a timestamp.
+_Avoid_: watermark, offset, checkpoint, last sync
+
+**Seed**:
+Queueing everything already on a device the first time a backend is configured,
+so existing history is pushed rather than stranded.
+_Avoid_: backfill, initial sync, bootstrap
+
 ### Organisation and notification
 
 **Category**:

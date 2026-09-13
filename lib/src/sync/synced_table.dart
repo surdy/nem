@@ -7,7 +7,10 @@ import 'package:drift/drift.dart';
 /// drain, the pull, the cursor and the merge are all written against this
 /// descriptor rather than against `tasks`. #11 registered `tasks`; #12 added
 /// targets, bindings and completions by adding three entries to
-/// `defaultSyncedTables` and nothing else.
+/// `defaultSyncedTables` and nothing else; #14 added categories and the
+/// membership join table the same way, which is why a join table needs no
+/// special handling anywhere below — it is a row with an id and a clock like
+/// any other.
 ///
 /// Nothing here knows what a task *is*. The engine moves rows of columns, and
 /// the meaning of those columns stays where it already lives — in the

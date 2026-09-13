@@ -2,28 +2,67 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
+import '../domain/category.dart';
 import '../domain/due_list.dart';
 import '../domain/due_status.dart';
 import '../domain/task.dart';
 import 'archived_tasks_screen.dart';
+import 'category_chips.dart';
 import 'create_task_screen.dart';
 import 'scan_screen.dart';
 import 'settings_screen.dart';
 import 'task_actions.dart';
 import 'task_detail_screen.dart';
 
-/// The home screen: everything due, grouped Overdue → Today → Soon.
+/// The home screen: everything due, grouped Overdue → Today → Soon, narrowed to
+/// the categories the filter names.
 class DueListScreen extends ConsumerWidget {
   const DueListScreen({super.key});
+
+  /// Opens the category picker and applies whatever comes back.
+  ///
+  /// The choice is written straight through to `sync_state`, so it is still
+  /// there on the next launch — a filter that quietly reset itself overnight
+  /// would be worse than no filter at all, because the list would look like the
+  /// whole list and not be it.
+  static Future<void> _pickFilter(
+    BuildContext context,
+    WidgetRef ref,
+    Set<String> selected,
+  ) async {
+    final picked = await showCategorySelector(
+      context: context,
+      selected: selected,
+      title: 'Filter by category',
+    );
+    if (picked == null) return;
+    await ref.read(categoryFilterProvider.notifier).select(picked);
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final sections = ref.watch(dueSectionsProvider);
+    final filter = ref.watch(categoryFilterProvider).value ?? const <String>{};
+    final categories = ref.watch(categoryListProvider).value ?? const [];
+    final filtered = [
+      for (final category in categories)
+        if (filter.contains(category.id)) category,
+    ];
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Due'),
         actions: [
+          IconButton(
+            icon: Icon(
+              filtered.isEmpty ? Icons.filter_list : Icons.filter_list_alt,
+              color: filtered.isEmpty
+                  ? null
+                  : Theme.of(context).colorScheme.primary,
+            ),
+            tooltip: 'Filter by category',
+            onPressed: () => _pickFilter(context, ref, filter),
+          ),
           IconButton(
             icon: const Icon(Icons.qr_code_scanner),
             tooltip: 'Scan',
@@ -62,14 +101,74 @@ class DueListScreen extends ConsumerWidget {
         icon: const Icon(Icons.add),
         label: const Text('New task'),
       ),
-      body: sections.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, _) => _Message(text: 'Could not load tasks.\n$error'),
-        data: (data) => data.isEmpty
-            ? const _Message(
-                text: 'Nothing due.\nAdd a task to start tracking it.',
-              )
-            : _SectionList(sections: data),
+      body: Column(
+        children: [
+          if (filtered.isNotEmpty) _FilterBar(categories: filtered),
+          Expanded(
+            child: sections.when(
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (error, _) =>
+                  _Message(text: 'Could not load tasks.\n$error'),
+              data: (data) => data.isEmpty
+                  ? _Message(
+                      text: filtered.isEmpty
+                          ? 'Nothing due.\nAdd a task to start tracking it.'
+                          : 'Nothing due in '
+                                '${_names(filtered)}.\n'
+                                'Clear the filter to see everything.',
+                    )
+                  : _SectionList(sections: data),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// "kitchen", "kitchen and car", "kitchen, car and admin".
+  static String _names(List<Category> categories) {
+    final names = [for (final category in categories) category.name];
+    if (names.length == 1) return names.single;
+    return '${names.take(names.length - 1).join(', ')} and ${names.last}';
+  }
+}
+
+/// What the due list is currently narrowed to, and the way back out of it.
+///
+/// On screen rather than only behind the app bar's icon, because a filtered
+/// list is indistinguishable from a short one: the difference between "nothing
+/// is due" and "nothing is due in the kitchen" is the whole of why the strip
+/// exists.
+class _FilterBar extends ConsumerWidget {
+  const _FilterBar({required this.categories});
+
+  final List<Category> categories;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final filter = ref.read(categoryFilterProvider.notifier);
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  for (final category in categories)
+                    CategoryChip(
+                      category: category,
+                      onDeleted: () => filter.toggle(category.id),
+                    ),
+                ],
+              ),
+            ),
+            TextButton(onPressed: filter.clear, child: const Text('Clear')),
+          ],
+        ),
       ),
     );
   }

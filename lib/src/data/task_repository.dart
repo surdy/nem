@@ -41,12 +41,25 @@ class TaskRepository {
 
   String? _cachedDeviceId;
 
-  /// Live tasks, soonest due first.
-  Stream<List<Task>> watchDueList() {
+  /// Live tasks, soonest due first, optionally narrowed to some categories.
+  ///
+  /// [categoryIds] empty means no filter at all — every live task — rather than
+  /// "tasks in no category", which is the one reading of an empty set that
+  /// would make the due list go blank the moment the first category is created.
+  ///
+  /// Several ids mean *any* of them, not all: a filter is what you want to look
+  /// at now, so picking kitchen and car asks for both piles, and a task in both
+  /// appears once. An intersection would be a query nobody wants and a list
+  /// that gets emptier the more you ask for.
+  Stream<List<Task>> watchDueList({Set<String> categoryIds = const {}}) {
     final lastCompletedAt = _lastCompletedAtExpression();
     final query = _db.select(_db.tasks).join([])
       ..addColumns([lastCompletedAt])
-      ..where(_db.tasks.deletedAt.isNull() & _db.tasks.isArchived.equals(false))
+      ..where(
+        _db.tasks.deletedAt.isNull() &
+            _db.tasks.isArchived.equals(false) &
+            _inAnyCategory(categoryIds),
+      )
       ..orderBy([
         OrderingTerm(expression: _db.tasks.dueDate),
         OrderingTerm(expression: _db.tasks.title),
@@ -56,6 +69,31 @@ class TaskRepository {
         for (final row in rows)
           _toDomain(row.readTable(_db.tasks), row.read(lastCompletedAt)),
       ],
+    );
+  }
+
+  /// Whether a task has a live membership of any of [categoryIds], or a
+  /// constant true when there is nothing to filter by.
+  ///
+  /// An `EXISTS` subquery rather than a join, deliberately: a task in two of the
+  /// selected categories has two membership rows, and a join would put it on the
+  /// due list twice. `EXISTS` asks the question the filter is actually asking —
+  /// is this task in any of them — and stops at the first row that says yes.
+  ///
+  /// It does not check that the category itself is live. It does not have to:
+  /// the ids come from the live list the user picked from, and deleting a
+  /// category tombstones its memberships in the same transaction, so a
+  /// membership of a dead category satisfies nothing here.
+  Expression<bool> _inAnyCategory(Set<String> categoryIds) {
+    if (categoryIds.isEmpty) return const Constant(true);
+    return existsQuery(
+      _db.selectOnly(_db.taskCategories)
+        ..addColumns([_db.taskCategories.id])
+        ..where(
+          _db.taskCategories.taskId.equalsExp(_db.tasks.id) &
+              _db.taskCategories.deletedAt.isNull() &
+              _db.taskCategories.categoryId.isIn(categoryIds.toList()),
+        ),
     );
   }
 

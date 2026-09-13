@@ -10,25 +10,31 @@ import 'synced_table.dart';
 
 /// The tables sync moves.
 ///
-/// All four of them, and the whole of what #12 had to add to the engine: the
-/// outbox, the drain, the pull, the cursor and the merge are written against
-/// [SyncedTable] rather than against any particular table, so registering one
-/// is the entire job.
+/// All six of them, and the whole of what #12 and #14 had to add to the engine:
+/// the outbox, the drain, the pull, the cursor and the merge are written
+/// against [SyncedTable] rather than against any particular table, so
+/// registering one is the entire job. #14 added categories and their membership
+/// join table by adding two lines here.
 ///
 /// The order is roughly parents before children — a target before the tasks and
-/// bindings that name it, a task before its completions — which is a
-/// convenience and never a requirement. A pull can legitimately deliver a row
-/// before the row it points at (ADR 0011), no table here carries a foreign key
-/// that could refuse it, and nothing in this file treats it as an error; the
-/// ordering only means the common case resolves in one sync rather than two.
+/// bindings that name it, a category before the memberships that name it, a
+/// task before its completions — which is a convenience and never a
+/// requirement. A pull can legitimately deliver a row before the row it points
+/// at (ADR 0011), no table here carries a foreign key that could refuse it, and
+/// nothing in this file treats it as an error; the ordering only means the
+/// common case resolves in one sync rather than two. `task_categories` is last
+/// of the mutable tables for that reason: it points at two rows rather than
+/// one, so it is the table with the most to gain from arriving late.
 ///
 /// Every one of them uses the default clock column, `updated_at`, completions
 /// included — see the column's doc comment in `data/database.dart` for why
 /// completions have one at all.
 List<SyncedTable> defaultSyncedTables(NemDatabase db) => [
   SyncedTable(db.targets),
+  SyncedTable(db.categories),
   SyncedTable(db.tasks),
   SyncedTable(db.bindings),
+  SyncedTable(db.taskCategories),
   SyncedTable(db.completions),
 ];
 

@@ -21,8 +21,8 @@ ever reads and writes rows.
    `migrations/20260913000000_nem_schema.sql`, and run it, then do the same with
    every later file in `migrations/` in filename order. They are idempotent —
    every statement is `if not exists` or `drop … if exists` first — so running
-   them twice is safe, and a project created before #12 is brought up to date by
-   the same paste.
+   them twice is safe, and a project created before #12 or #14 is brought up to
+   date by the same paste.
 3. Do the **"Claim the account"** step below. Until you do, every request is
    refused by RLS and nem will say so.
 
@@ -131,19 +131,42 @@ specific:
 
 ## What is and is not synced
 
-All four domain tables: `targets`, `tasks`, `bindings` and `completions`. A
-completion recorded on one phone reschedules the task on the other, and a label
-or tag provisioned on one resolves on the other.
+All six domain tables: `targets`, `categories`, `tasks`, `bindings`,
+`task_categories` and `completions`. A completion recorded on one phone
+reschedules the task on the other, a label or tag provisioned on one resolves on
+the other, and a task put in a category on one is in it on the other.
 
 Nothing in `sync_state` or `outbox` on the device is ever uploaded. Those are
-device-local: which backend this phone points at, how far its pull has got, and
-what it still owes.
+device-local: which backend this phone points at, how far its pull has got, what
+it still owes, and which categories *that phone's* due list is filtered to —
+deliberately not shared, because two phones can reasonably be looking at two
+different slices of the same work.
 
 `due_date` and `last_completed_at` are here, and they are *not* what the other
 device believes. They are derived caches (ADR 0004), replicated only because
 they are columns of the row; each device recomputes them from its own copy of
 the completion log after every pull. If you edit one in the Table Editor, the
 next sync on either phone will overwrite it with arithmetic.
+
+### Categories and memberships
+
+`task_categories` is the join table, and it has an `id` of its own where
+PLAN.md's schema block gives it a composite key. That is sync's doing: every row
+sync moves is addressed by a single `id` — the outbox, the pull cursor and the
+conditional `PATCH` all assume one. The pair stays unique as a constraint, so a
+membership added on both phones converges on one row rather than two.
+
+Neither column is a foreign key, on either side, for the reason ADR 0011 gives:
+rows are pulled per table in no guaranteed order, so a membership can arrive
+before the task or the category it names. Expect to see rows in the Table Editor
+whose `category_id` matches nothing yet. The app treats those as "not in any
+category" and they resolve themselves on the next pull.
+
+Deleting a category is soft, like everything else, and it deletes no work: the
+tasks are untouched and only the membership rows are tombstoned alongside it. As
+with completions, expect both tables to hold rows you have "deleted" — that is
+the design, and hard-deleting one in the Table Editor would let the other phone
+resurrect it.
 
 ### Completions merge rather than resolve
 

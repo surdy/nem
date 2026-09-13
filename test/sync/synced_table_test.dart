@@ -4,6 +4,7 @@ import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/sync/local_rows.dart';
+import 'package:nem/src/sync/sync_engine.dart';
 import 'package:nem/src/sync/synced_table.dart';
 
 void main() {
@@ -121,5 +122,34 @@ void main() {
 
     final raw = (await rows.read(tasks, task.id))!;
     expect(codec.toLocal(codec.toRemote(raw)), raw);
+  });
+
+  test('every domain table is registered, on the same clock and with a soft '
+      'delete', () {
+    final registered = defaultSyncedTables(db);
+
+    // Registration is the whole of joining sync (#12, #14): a table that is
+    // not in this list is not synced, however many repositories write to it.
+    expect(
+      [for (final table in registered) table.name],
+      containsAll(<String>[
+        'targets',
+        'categories',
+        'tasks',
+        'bindings',
+        'task_categories',
+        'completions',
+      ]),
+    );
+    for (final table in registered) {
+      expect(table.clockColumn, 'updated_at', reason: table.name);
+      expect(table.hasSoftDelete, isTrue, reason: table.name);
+      // The membership join table included: sync addresses every row it moves
+      // by a single `id`, which is why `task_categories` has one at all rather
+      // than the composite key PLAN.md's schema block gives it.
+      expect(table.columnNames, contains('id'), reason: table.name);
+      // The seed walks every table in `created_at` order.
+      expect(table.columnNames, contains('created_at'), reason: table.name);
+    }
   });
 }

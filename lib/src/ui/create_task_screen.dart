@@ -7,6 +7,7 @@ import '../domain/interval_unit.dart';
 import '../domain/schedule.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
+import 'category_chips.dart';
 import 'due_list_screen.dart' show formatDueDate;
 import 'fixed_schedule_editor.dart';
 
@@ -34,6 +35,12 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
   /// The target this task is done on, or null for work attached to nothing
   /// physical (ADR 0008).
   String? _targetId;
+
+  /// The categories this task will be put in (CONTEXT.md — "Category").
+  ///
+  /// A set rather than a single value, because a task can be in several at
+  /// once — which is exactly what distinguishes a category from a target.
+  final Set<String> _categoryIds = {};
 
   FixedFrequency _frequency = FixedFrequency.weekly;
   late DateTime _startDate = _today();
@@ -134,23 +141,28 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
       final repository = ref.read(taskRepositoryProvider);
       final title = _titleController.text.trim();
       final notes = _notesController.text;
-      switch (_mode) {
-        case ScheduleMode.floating:
-          await repository.createFloatingTask(
-            title: title,
-            notes: notes,
-            targetId: _targetId,
-            intervalN: _intervalN!,
-            intervalUnit: _unit,
-            startDate: _startDate,
-          );
-        case ScheduleMode.fixed:
-          await repository.createFixedTask(
-            title: title,
-            notes: notes,
-            targetId: _targetId,
-            schedule: _fixedSchedule!,
-          );
+      final task = switch (_mode) {
+        ScheduleMode.floating => await repository.createFloatingTask(
+          title: title,
+          notes: notes,
+          targetId: _targetId,
+          intervalN: _intervalN!,
+          intervalUnit: _unit,
+          startDate: _startDate,
+        ),
+        ScheduleMode.fixed => await repository.createFixedTask(
+          title: title,
+          notes: notes,
+          targetId: _targetId,
+          schedule: _fixedSchedule!,
+        ),
+      };
+      // After the task rather than with it: a membership is a row of its own
+      // pointing at the task, so there has to be a task for it to point at.
+      if (_categoryIds.isNotEmpty) {
+        await ref
+            .read(categoryRepositoryProvider)
+            .setCategoriesForTask(task.id, _categoryIds);
       }
       if (mounted) Navigator.of(context).pop();
     } finally {
@@ -174,6 +186,7 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
     final previewDue = _previewDueDate;
     final isFixed = _mode == ScheduleMode.fixed;
     final targets = ref.watch(targetListProvider).value ?? const <Target>[];
+    final categories = ref.watch(categoryListProvider).value ?? const [];
 
     return Scaffold(
       appBar: AppBar(title: const Text('New task')),
@@ -220,6 +233,33 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
                     ),
                 ],
                 onChanged: (value) => setState(() => _targetId = value),
+              ),
+            ],
+            // Offered only once there is something to choose, like the target
+            // above: a category is user-defined, so the list is empty until one
+            // has been made in Settings.
+            if (categories.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text('Categories (optional)', style: theme.textTheme.labelLarge),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  for (final category in categories)
+                    FilterChip(
+                      avatar: CategorySwatch(color: category.color),
+                      label: Text(category.name),
+                      selected: _categoryIds.contains(category.id),
+                      onSelected: (isSelected) => setState(() {
+                        if (isSelected) {
+                          _categoryIds.add(category.id);
+                        } else {
+                          _categoryIds.remove(category.id);
+                        }
+                      }),
+                    ),
+                ],
               ),
             ],
             const SizedBox(height: 32),

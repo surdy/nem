@@ -1,10 +1,12 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nem/src/data/binding_repository.dart';
+import 'package:nem/src/data/category_repository.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/target_repository.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/binding.dart';
+import 'package:nem/src/domain/category.dart';
 import 'package:nem/src/domain/completion.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/sync/outbox_store.dart';
@@ -96,6 +98,29 @@ const _v6Schema = [
   'PRAGMA user_version = 6',
 ];
 
+/// What schema version 7 added on top of [_v6Schema] — the `completions`
+/// rewrite that dropped the foreign key on `task_id` and added `updated_at`
+/// (#12). A device that took the completion-sync build but not the categories
+/// one has this on disk, and no `categories` table at all.
+///
+/// The table is dropped and recreated here rather than altered, because that is
+/// what the `TableMigration` at version 7 does and SQLite has no other way to
+/// drop a constraint. This is a fixture being built before any row is inserted,
+/// not a migration: nothing is lost because nothing is there yet.
+const _v7Schema = [
+  ..._v6Schema,
+  'DROP TABLE completions',
+  'CREATE TABLE "completions" ("id" TEXT NOT NULL, '
+      '"task_id" TEXT NOT NULL, '
+      '"completed_at" INTEGER NOT NULL, "source" TEXT NOT NULL, '
+      '"note" TEXT NULL, "device_id" TEXT NOT NULL, '
+      '"created_at" INTEGER NOT NULL, "updated_at" INTEGER NOT NULL, '
+      '"deleted_at" INTEGER NULL, PRIMARY KEY ("id"))',
+  'CREATE INDEX idx_completions_task_id ON completions (task_id)',
+  'CREATE INDEX idx_completions_deleted_at ON completions (deleted_at)',
+  'PRAGMA user_version = 7',
+];
+
 /// Inserts the one task every migration test starts from.
 const _insertTask =
     'INSERT INTO tasks (id, title, schedule_mode, interval_n, '
@@ -153,7 +178,7 @@ void main() {
     expect(task.lastCompletedAt, isNull);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 7);
+    expect(version.data.values.single, 8);
 
     // And the new tables are usable, indexes included.
     final completion = await repository.recordCompletion(
@@ -236,7 +261,7 @@ void main() {
     expect((await targets.allTargets()).single.id, target.id);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 7);
+    expect(version.data.values.single, 8);
   });
 
   test('upgrading from version 3 adds bindings and keeps the targets and '
@@ -298,7 +323,7 @@ void main() {
     );
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 7);
+    expect(version.data.values.single, 8);
 
     final indexes = await db
         .customSelect(
@@ -376,7 +401,7 @@ void main() {
     expect(task.dueDate, DateTime(2026, 4, 4, 9));
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 7);
+    expect(version.data.values.single, 8);
 
     // And the new columns are usable: a snooze written after the upgrade takes
     // effect and survives a recomputation.
@@ -454,7 +479,7 @@ void main() {
     expect(task.dueDate, DateTime(2026, 4, 4, 9));
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 7);
+    expect(version.data.values.single, 8);
 
     // Nothing is queued by the upgrade itself. A device upgrading into this
     // build has no backend configured, and what it already holds is queued by
@@ -552,7 +577,7 @@ void main() {
     expect(task.dueDate, DateTime(2026, 4, 4, 9));
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 7);
+    expect(version.data.values.single, 8);
 
     // The constraint is gone. SQLite cannot drop one in place, so this is the
     // `TableMigration` doing its job rather than an `ALTER TABLE` that never
@@ -605,6 +630,103 @@ void main() {
       containsAll(<String>[
         'idx_completions_task_id',
         'idx_completions_deleted_at',
+      ]),
+    );
+  });
+  test('upgrading from version 7 adds categories and their memberships, and '
+      'leaves every existing task in none of them', () async {
+    final startDate = DateTime(2026, 3, 1, 9);
+    final dueDate = DateTime(2026, 3, 31, 9);
+    final completedAt = DateTime(2026, 3, 5, 9);
+
+    final db = NemDatabase(
+      NativeDatabase.memory(
+        setup: (raw) {
+          for (final statement in _v7Schema) {
+            raw.execute(statement);
+          }
+          raw.execute(_insertTask, [
+            'task-1',
+            'Replace the water filter',
+            'floating',
+            30,
+            'day',
+            _seconds(startDate),
+            _seconds(dueDate),
+            _seconds(startDate),
+            _seconds(startDate),
+          ]);
+          raw.execute(
+            'INSERT INTO completions (id, task_id, completed_at, source, '
+            'device_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [
+              'completion-1',
+              'task-1',
+              _seconds(completedAt),
+              'manual',
+              'device-1',
+              _seconds(completedAt),
+              _seconds(completedAt),
+            ],
+          );
+        },
+      ),
+    );
+    addTearDown(db.close);
+
+    final tasks = TaskRepository(db);
+    final categories = CategoryRepository(db);
+    final outbox = OutboxStore(db);
+
+    // The upgrade only adds tables. The task, its completion and the due date
+    // derived from that completion are untouched (ADR 0004), and the task is
+    // simply in no category — which is what every task on an upgrading device
+    // is, because there are none yet.
+    final task = (await tasks.allTasks()).single;
+    expect(task.id, 'task-1');
+    expect(task.lastCompletedAt, completedAt);
+    expect(task.dueDate, DateTime(2026, 4, 4, 9));
+    expect(await categories.allCategories(), isEmpty);
+    expect(await categories.categoriesForTask('task-1'), isEmpty);
+
+    final version = await db.customSelect('PRAGMA user_version').getSingle();
+    expect(version.data.values.single, 8);
+
+    // Nothing is queued by the upgrade itself, for the reason version 6 gives:
+    // what a device already holds is seeded the first time a backend is
+    // configured, not by a migration.
+    expect(await outbox.count(), 0);
+
+    // And the new tables work, membership included.
+    final kitchen = await categories.createCategory(
+      name: 'Kitchen',
+      color: categorySwatches.first,
+      now: DateTime(2026, 4, 4, 9),
+    );
+    await categories.setCategoriesForTask('task-1', {
+      kitchen.id,
+    }, now: DateTime(2026, 4, 4, 9));
+    expect(
+      (await categories.categoriesForTask('task-1')).single.name,
+      'Kitchen',
+    );
+
+    // The indexes come with the tables — the unique one included, which is what
+    // stops a membership being held twice.
+    final indexes = await db
+        .customSelect(
+          "SELECT name FROM sqlite_master WHERE type = 'index' "
+          "AND tbl_name IN ('categories', 'task_categories')",
+        )
+        .get();
+    expect(
+      indexes.map((row) => row.data['name']),
+      containsAll(<String>[
+        'idx_categories_deleted_at',
+        'idx_task_categories_task_id',
+        'idx_task_categories_category_id',
+        'idx_task_categories_deleted_at',
+        'idx_task_categories_pair',
       ]),
     );
   });

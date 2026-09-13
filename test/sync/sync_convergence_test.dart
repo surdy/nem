@@ -2,6 +2,7 @@ import 'package:drift/drift.dart' show driftRuntimeOptions;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nem/src/data/binding_repository.dart';
+import 'package:nem/src/data/category_repository.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/target_repository.dart';
 import 'package:nem/src/data/task_repository.dart';
@@ -402,13 +403,196 @@ void main() {
       expect((await deviceB.tasks.allTasks()).single.targetId, isNull);
     });
   });
+
+  group('categories', () {
+    test('a category made on one device turns up on the other, with its '
+        'colour', () async {
+      final kitchen = await deviceA.categories.createCategory(
+        name: 'Kitchen',
+        color: 0xFF4285F4,
+        now: DateTime(2026, 6, 1, 9),
+      );
+
+      await syncBoth();
+
+      final arrived = (await deviceB.categories.allCategories()).single;
+      expect(arrived.id, kitchen.id);
+      expect(arrived.name, 'Kitchen');
+      expect(arrived.color, 0xFF4285F4);
+    });
+
+    test(
+      'a rename on one device wins over an older name on the other',
+      () async {
+        final kitchen = await deviceA.categories.createCategory(
+          name: 'Kitchen',
+          now: DateTime(2026, 6, 1, 9),
+        );
+        await syncBoth();
+
+        await deviceB.categories.updateCategory(
+          id: kitchen.id,
+          name: 'The kitchen',
+          color: 0xFF34A853,
+          now: DateTime(2026, 6, 3, 9),
+        );
+        await deviceA.categories.updateCategory(
+          id: kitchen.id,
+          name: 'Kitchen cupboard',
+          now: DateTime(2026, 6, 2, 9),
+        );
+        await syncBoth();
+
+        // Last write wins on `updated_at`, as for everything that is not a
+        // completion (PLAN.md — Sync).
+        for (final device in [deviceA, deviceB]) {
+          final stored = (await device.categories.allCategories()).single;
+          expect(stored.name, 'The kitchen');
+          expect(stored.color, 0xFF34A853);
+        }
+      },
+    );
+
+    test('a task put in two categories on one device is in both on the '
+        'other', () async {
+      final kitchen = await deviceA.categories.createCategory(
+        name: 'Kitchen',
+        now: DateTime(2026, 6, 1, 9),
+      );
+      final admin = await deviceA.categories.createCategory(
+        name: 'Admin',
+        now: DateTime(2026, 6, 1, 9),
+      );
+      final id = await createTask(deviceA);
+      await deviceA.categories.setCategoriesForTask(id, {
+        kitchen.id,
+        admin.id,
+      }, now: DateTime(2026, 6, 1, 10));
+
+      await syncBoth();
+
+      expect(
+        (await deviceB.categories.categoriesForTask(id)).map((c) => c.name),
+        ['Admin', 'Kitchen'],
+      );
+      // And the filtered due list on the far device agrees.
+      expect(
+        (await deviceB.tasks.watchDueList(categoryIds: {kitchen.id}).first)
+            .single
+            .id,
+        id,
+      );
+    });
+
+    test('taking a task out of a category on one device takes it out on the '
+        'other', () async {
+      final kitchen = await deviceA.categories.createCategory(
+        name: 'Kitchen',
+        now: DateTime(2026, 6, 1, 9),
+      );
+      final id = await createTask(deviceA);
+      await deviceA.categories.setCategoriesForTask(id, {
+        kitchen.id,
+      }, now: DateTime(2026, 6, 1, 10));
+      await syncBoth();
+      expect(await deviceB.categories.categoriesForTask(id), hasLength(1));
+
+      await deviceA.categories.setCategoriesForTask(
+        id,
+        const {},
+        now: DateTime(2026, 6, 2, 9),
+      );
+      await syncBoth();
+
+      expect(await deviceB.categories.categoriesForTask(id), isEmpty);
+      // The membership row is tombstoned on both, not deleted on either — a
+      // hard delete on one is what would let the other resurrect it.
+      for (final device in [deviceA, deviceB]) {
+        final rows = await device.db.select(device.db.taskCategories).get();
+        expect(rows, hasLength(1));
+        expect(rows.single.deletedAt, isNotNull);
+      }
+    });
+
+    test('deleting a category on one device empties it on the other and '
+        'leaves the tasks alone', () async {
+      final kitchen = await deviceA.categories.createCategory(
+        name: 'Kitchen',
+        now: DateTime(2026, 6, 1, 9),
+      );
+      final id = await createTask(deviceA);
+      await deviceA.categories.setCategoriesForTask(id, {
+        kitchen.id,
+      }, now: DateTime(2026, 6, 1, 10));
+      await syncBoth();
+
+      await deviceA.categories.softDeleteCategory(
+        kitchen.id,
+        now: DateTime(2026, 6, 2, 9),
+      );
+      await syncBoth();
+
+      expect(await deviceB.categories.allCategories(), isEmpty);
+      expect(await deviceB.categories.categoriesForTask(id), isEmpty);
+      // The work survives the grouping, exactly as it survives a deleted
+      // target.
+      expect((await deviceB.tasks.allTasks()).single.id, id);
+      expect(await deviceB.storedDueDate(id), DateTime(2026, 7, 1, 9));
+    });
+
+    test('a delete beats a rename made on the other device while it was '
+        'offline', () async {
+      final kitchen = await deviceA.categories.createCategory(
+        name: 'Kitchen',
+        now: DateTime(2026, 6, 1, 9),
+      );
+      await syncBoth();
+
+      await deviceA.categories.softDeleteCategory(
+        kitchen.id,
+        now: DateTime(2026, 6, 2, 9),
+      );
+      // B has not seen the delete, and renames it later by the clock.
+      await deviceB.categories.updateCategory(
+        id: kitchen.id,
+        name: 'The kitchen',
+        now: DateTime(2026, 6, 3, 9),
+      );
+      await syncBoth();
+
+      // A tombstone outranks every non-deleted version of the row, whatever
+      // its timestamp (`sync_row.dart`).
+      expect(await deviceA.categories.allCategories(), isEmpty);
+      expect(await deviceB.categories.allCategories(), isEmpty);
+    });
+
+    test('a membership that arrives before its category is kept and resolves '
+        'once the category lands', () async {
+      // The ordering ADR 0011 is about: a pull delivers rows per table, and
+      // nothing refuses a membership whose category has not arrived yet.
+      final kitchen = await deviceA.categories.createCategory(
+        name: 'Kitchen',
+        now: DateTime(2026, 6, 1, 9),
+      );
+      final id = await createTask(deviceA);
+      await deviceA.categories.setCategoriesForTask(id, {
+        kitchen.id,
+      }, now: DateTime(2026, 6, 1, 10));
+      await deviceA.engine.sync();
+
+      // B pulls the membership table only, then everything.
+      await deviceB.engine.pull();
+      expect(await deviceB.categories.categoriesForTask(id), hasLength(1));
+    });
+  });
 }
 
 /// One phone: its own database, its own cursors, its own outbox.
 class _Device {
   _Device._(this.db, this.settings, this.tasks, this.engine)
     : targets = TargetRepository(db),
-      bindings = BindingRepository(db);
+      bindings = BindingRepository(db),
+      categories = CategoryRepository(db);
 
   static Future<_Device> open(
     FakeSyncTransport transport,
@@ -439,6 +623,7 @@ class _Device {
   final SyncEngine engine;
   final TargetRepository targets;
   final BindingRepository bindings;
+  final CategoryRepository categories;
 
   late final ScanResolver resolver = ScanResolver(
     RepositoryScanLookup(bindings: bindings, targets: targets, tasks: tasks),

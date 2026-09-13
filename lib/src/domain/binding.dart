@@ -77,6 +77,20 @@ class Binding {
   final DateTime createdAt;
   final DateTime updatedAt;
 
+  /// What this code reads as to a person: the URI a tag or a label nem
+  /// provisioned actually carries, or the raw code for anything else.
+  ///
+  /// [value] is not the whole story for nem's own codes. A tag and a label
+  /// store a bare uuid, because that is what resolution matches on, but what is
+  /// physically on them is `nem://t/<uuid>` — and after a re-point that uuid is
+  /// no longer the uuid of the target the binding now names, so printing it
+  /// bare would look like a stale row rather than the address it is.
+  String get displayValue => switch (kind) {
+    BindingKind.barcode => value,
+    BindingKind.tag ||
+    BindingKind.label => isMintedScanValue(value) ? labelUriFor(value) : value,
+  };
+
   @override
   String toString() => 'Binding($id, ${kind.name} $value -> $targetId)';
 }
@@ -96,6 +110,21 @@ const _targetHost = 't';
 /// the only argument for it.
 String labelUriFor(String targetId) =>
     '$scanUriScheme://$_targetHost/$targetId';
+
+/// The shape of an id nem mints — RFC 4122 version 4, which is what `newId`
+/// produces and therefore what sits inside every `nem://t/<uuid>`.
+final _mintedId = RegExp(
+  r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+);
+
+/// Whether [value] is an id nem minted, rather than a code the world already
+/// had.
+///
+/// A tag is the one carrier that can hold either: nem writes its own URI to a
+/// blank one, but a tag somebody else wrote is bound by whatever payload it
+/// already carries (CONTEXT.md — "Binding"), and only the shape of the stored
+/// value tells the two apart afterwards.
+bool isMintedScanValue(String value) => _mintedId.hasMatch(value);
 
 /// The target id inside a scanned `nem://t/<uuid>`, or null when [raw] is not
 /// one of ours.

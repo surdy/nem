@@ -9,6 +9,7 @@ import '../domain/task.dart';
 import 'due_list_screen.dart' show formatDueDate;
 import 'target_form_screen.dart';
 import 'target_label_screen.dart';
+import 'target_tag_screen.dart';
 
 /// One target and the work done on it.
 ///
@@ -32,6 +33,7 @@ class TargetDetailScreen extends ConsumerWidget {
               onSelected: (action) => switch (action) {
                 _TargetAction.rename => _edit(context, target),
                 _TargetAction.label => _showLabel(context, target),
+                _TargetAction.tag => _writeTag(context, target),
                 _TargetAction.delete => _confirmDelete(context, ref, target),
               },
               itemBuilder: (context) => const [
@@ -40,6 +42,10 @@ class TargetDetailScreen extends ConsumerWidget {
                   child: Text('Rename'),
                 ),
                 PopupMenuItem(value: _TargetAction.label, child: Text('Label')),
+                PopupMenuItem(
+                  value: _TargetAction.tag,
+                  child: Text('Write a tag'),
+                ),
                 PopupMenuItem(
                   value: _TargetAction.delete,
                   child: Text('Delete target'),
@@ -66,6 +72,13 @@ class TargetDetailScreen extends ConsumerWidget {
       MaterialPageRoute<void>(
         builder: (_) => TargetLabelScreen(target: target),
       ),
+    );
+  }
+
+  /// Writing this target's address to a blank NFC tag (CONTEXT.md — "Tag").
+  void _writeTag(BuildContext context, Target target) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => TargetTagScreen(target: target)),
     );
   }
 
@@ -102,7 +115,7 @@ class TargetDetailScreen extends ConsumerWidget {
   }
 }
 
-enum _TargetAction { rename, label, delete }
+enum _TargetAction { rename, label, tag, delete }
 
 class _TargetBody extends ConsumerWidget {
   const _TargetBody({required this.target});
@@ -150,12 +163,50 @@ class _TargetBody extends ConsumerWidget {
 
 /// The scannable codes bound to this target (CONTEXT.md — "Binding").
 ///
-/// Visible so a mis-bound barcode can be taken off again: binding is one tap
-/// from a scan, so unbinding has to be reachable from somewhere.
+/// Visible so a mis-bound barcode can be taken off again, and so a tag already
+/// stuck to something can be pointed somewhere else: binding is one tap from a
+/// scan, so undoing and redoing it has to be reachable from somewhere.
 class _Codes extends ConsumerWidget {
   const _Codes({required this.targetId});
 
   final String targetId;
+
+  /// Points an existing code at a different target, leaving the code alone.
+  ///
+  /// This is what ADR 0008 buys: because a code names a *target* rather than a
+  /// task, moving a tag from the boiler to the back door is a row in the
+  /// bindings table changing its `target_id`. Nothing is re-written, nothing is
+  /// re-printed, and the sticker on the wall never moves.
+  Future<void> _repoint(
+    BuildContext context,
+    WidgetRef ref,
+    Binding binding,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final chosen = await showDialog<Target>(
+      context: context,
+      builder: (_) => _RepointDialog(binding: binding),
+    );
+    if (chosen == null) return;
+
+    // `bind` re-points the existing row rather than inserting a second one,
+    // which is what keeps `(kind, value)` unique and one physical code
+    // resolving to exactly one target.
+    await ref
+        .read(bindingRepositoryProvider)
+        .bind(targetId: chosen.id, kind: binding.kind, value: binding.value);
+
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            'That ${binding.kind.displayLabel.toLowerCase()} now resolves to '
+            '${chosen.name}. It was not re-written.',
+          ),
+        ),
+      );
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -183,18 +234,63 @@ class _Codes extends ConsumerWidget {
               BindingKind.barcode => Icons.barcode_reader,
             }),
             title: Text(binding.kind.displayLabel),
-            subtitle: Text(
-              binding.kind == BindingKind.label
-                  ? labelUriFor(binding.value)
-                  : binding.value,
-            ),
-            trailing: IconButton(
-              icon: const Icon(Icons.link_off),
-              tooltip: 'Unbind',
-              onPressed: () =>
+            subtitle: Text(binding.displayValue),
+            trailing: PopupMenuButton<_CodeAction>(
+              key: ValueKey('binding-menu-${binding.id}'),
+              onSelected: (action) => switch (action) {
+                _CodeAction.repoint => _repoint(context, ref, binding),
+                _CodeAction.unbind =>
                   ref.read(bindingRepositoryProvider).unbind(binding.id),
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(
+                  value: _CodeAction.repoint,
+                  child: Text('Point at another target'),
+                ),
+                PopupMenuItem(value: _CodeAction.unbind, child: Text('Unbind')),
+              ],
             ),
           ),
+      ],
+    );
+  }
+}
+
+enum _CodeAction { repoint, unbind }
+
+/// Which target a code should resolve to from now on.
+///
+/// Pops the chosen target, or null. Every live target is offered except the one
+/// the code already names, since choosing that one would be a no-op dressed up
+/// as a change.
+class _RepointDialog extends ConsumerWidget {
+  const _RepointDialog({required this.binding});
+
+  final Binding binding;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final targets = ref.watch(targetListProvider).value ?? const <Target>[];
+    final others = [
+      for (final target in targets)
+        if (target.id != binding.targetId) target,
+    ];
+
+    return SimpleDialog(
+      title: Text('Point this ${binding.kind.displayLabel.toLowerCase()} at'),
+      children: [
+        if (others.isEmpty)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(24, 0, 24, 16),
+            child: Text('There is nowhere else to point it yet.'),
+          )
+        else
+          for (final target in others)
+            SimpleDialogOption(
+              key: ValueKey('repoint-to-${target.id}'),
+              onPressed: () => Navigator.of(context).pop(target),
+              child: Text(target.name),
+            ),
       ],
     );
   }

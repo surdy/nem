@@ -121,6 +121,60 @@ void main() {
     });
   });
 
+  group('how a binding reads', () {
+    const minted = '2a1f7c58-8c2e-4a3b-9f10-0a1b2c3d4e5f';
+
+    test('a tag nem wrote reads as the URI that is on it', () {
+      // The stored value is the bare uuid, because that is what resolution
+      // matches on — but what is physically written on the tag is the URI, and
+      // after a re-point the uuid is not the id of the target the binding names
+      // (ADR 0008), so printing it bare would look like a stale row.
+      final tag = _binding(
+        targetId: 'another-target',
+        kind: BindingKind.tag,
+        value: minted,
+      );
+      expect(tag.displayValue, 'nem://t/$minted');
+    });
+
+    test('a label reads as its URI too', () {
+      final label = _binding(
+        targetId: minted,
+        kind: BindingKind.label,
+        value: minted,
+      );
+      expect(label.displayValue, 'nem://t/$minted');
+    });
+
+    test('a tag somebody else wrote reads as its own payload', () {
+      // A third-party tag is bound by whatever it already carries, and dressing
+      // that up as a nem URI would be a lie about what is on the sticker.
+      final foreign = _binding(
+        targetId: minted,
+        kind: BindingKind.tag,
+        value: 'https://example.com/filter',
+      );
+      expect(foreign.displayValue, 'https://example.com/filter');
+    });
+
+    test('a barcode reads as the product code it is', () {
+      final barcode = _binding(
+        targetId: minted,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+      expect(barcode.displayValue, '5010358210016');
+    });
+
+    test('only a real minted id counts as one', () {
+      expect(isMintedScanValue(minted), isTrue);
+      expect(isMintedScanValue(minted.toUpperCase()), isFalse);
+      expect(isMintedScanValue('5010358210016'), isFalse);
+      expect(isMintedScanValue('boiler'), isFalse);
+      expect(isMintedScanValue(''), isFalse);
+    });
+  });
+
   group('parsing a scanned code', () {
     test('a nem URI off the camera is a label', () {
       final code = ScannedCode.parse('nem://t/abc', ScanCarrier.camera);

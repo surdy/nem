@@ -70,7 +70,7 @@ targets(
 )
 
 bindings(
-  id uuid pk, target_id uuid fk,
+  id uuid pk, target_id uuid,      -- deliberately no FK, see ADR 0011
   kind text check (kind in ('tag','label','barcode')),
   value text,               -- our uuid for tag/label, raw code for barcode
   created_at, updated_at, deleted_at,
@@ -228,7 +228,8 @@ Not yet challenged. Flag any and I'll change it before P1.
 | `flutter_timezone` | the device's IANA zone id, which `timezone` cannot supply |
 | `nfc_manager` | NFC read and NDEF write, both platforms |
 | `mobile_scanner` | camera QR and barcode capture |
-| `qr_flutter` | label rendering |
+| `pretty_qr_code` | label rendering — `qr_flutter` wraps the same encoder but last shipped in 2023 |
+| `share_plus` | handing an exported label to the system share sheet, where printing lives |
 | `flutter_local_notifications` + `timezone` | digest and reminders |
 | `supabase_flutter` | auth, Postgres, realtime, storage |
 | `flutter_riverpod` | state management (manual providers, not codegen) |

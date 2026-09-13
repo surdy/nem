@@ -1,7 +1,8 @@
-# No foreign key constraint on a task's target
+# No foreign key constraint on a reference to a target
 
-`tasks.target_id` references a target but carries no `REFERENCES` constraint,
-even though PLAN.md's schema block writes it as a foreign key.
+`tasks.target_id` and `bindings.target_id` both reference a target, and neither
+carries a `REFERENCES` constraint, even though PLAN.md's schema block originally
+wrote both as foreign keys.
 
 Two properties of this design make the constraint wrong rather than merely
 unnecessary. Deletes are soft (ADR 0003's schema shape, and every table carries

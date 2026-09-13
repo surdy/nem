@@ -74,6 +74,13 @@ A pre-existing product code (EAN, UPC, Code 128) that nem binds but did not
 create.
 _Avoid_: product tag, UPC as a generic term
 
+**Carrier**:
+Which of the three kinds of code a value was read off — a tag, a label, or a
+barcode. The same `nem://t/<uuid>` is byte-identical on a tag and a printed
+label, so only the reader knows which it came from, and the carrier is what a
+completion records as its source.
+_Avoid_: kind, medium, source (as a general word), scan type
+
 **Scan**:
 Reading a tag, label, or barcode in order to resolve a target.
 _Avoid_: tap, read, check-in

@@ -108,8 +108,12 @@ void main() {
     await write(tester);
 
     expect(find.textContaining('has not got the room'), findsOneWidget);
-    expect(find.textContaining('52 bytes'), findsOneWidget);
-    expect(find.textContaining('12'), findsOneWidget);
+    // Both halves of the one message, matched tightly. A bare '12' also matched
+    // the `nem://t/<uuid>` the screen displays, whenever that random uuid
+    // happened to contain those two digits — which is 11.5% of the time, and is
+    // why this test failed intermittently and looked timezone-related.
+    expect(find.textContaining('needs 52 bytes'), findsOneWidget);
+    expect(find.textContaining('it holds 12.'), findsOneWidget);
     // Nothing was written, so nothing may claim it was.
     expect(await bindings.bindingsForTarget(boiler.id), isEmpty);
 

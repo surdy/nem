@@ -3,9 +3,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'src/app/app.dart';
 import 'src/app/providers.dart';
+import 'src/app/time_zones.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Before anything reads a task: a fixed schedule's occurrences are wall-clock
+  // times in a named zone, and resolving one needs the tz database loaded
+  // (ADR 0010).
+  await initialiseTimeZones();
 
   final container = ProviderContainer();
 

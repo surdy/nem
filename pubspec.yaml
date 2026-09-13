@@ -40,6 +40,19 @@ dependencies:
   # The system share sheet, which is where printing, AirDrop and "save to Files"
   # all live — a label is useless until it is off the phone and on paper.
   share_plus: ^13.3.0
+  # Reading and writing NFC tags on both platforms. It declares no Android
+  # permissions of its own, so AndroidManifest.xml declares NFC itself, and it
+  # reads no launch intent at all — which is why Android tap-to-launch from a
+  # closed app is #9 and not part of #8.
+  #
+  # 4.x, and none of the 3.x examples compile against it: `isAvailable` became
+  # `checkAvailability`, `startSession` now requires `pollingOptions`, `onError`
+  # became `onSessionErrorIos`, and NDEF moved out into its own package.
+  nfc_manager: ^4.2.1
+  # NDEF, which 4.0 deleted from nfc_manager. There is no URI record helper in
+  # either package — `NdefRecord.createUri` did not survive the move — so
+  # `lib/src/nfc/ndef_uri.dart` assembles the record by hand.
+  nfc_manager_ndef: ^1.1.0
 
 dev_dependencies:
   flutter_test:

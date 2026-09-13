@@ -14,6 +14,8 @@ import '../domain/due_list.dart';
 import '../domain/scan.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
+import '../nfc/nfc_tag_gateway.dart';
+import '../nfc/tag_gateway.dart';
 import '../notifications/digest_notifier.dart';
 import '../notifications/digest_scheduler.dart';
 import '../notifications/local_digest_notifier.dart';
@@ -96,6 +98,13 @@ final scanResolverProvider = Provider<ScanResolver>(
     ),
   ),
 );
+
+/// The NFC hardware, behind the one interface that touches the plugin (#8).
+///
+/// The seam that `ScanPreviewBuilder` is for the camera: overridden with a fake
+/// in every test, so writing a tag, a tag too small to hold nem's URI and a
+/// phone with no NFC in it are all exercised on a machine with no NFC in it.
+final tagGatewayProvider = Provider<TagGateway>((ref) => NfcTagGateway());
 
 /// One task, live, or null once it is gone.
 final taskProvider = StreamProvider.family<Task?, String>(

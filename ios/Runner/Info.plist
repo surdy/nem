@@ -26,6 +26,8 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NFCReaderUsageDescription</key>
+	<string>nem reads the NFC tag on a target, so the work due there can be recorded.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>nem uses the camera to scan the label on a target, so the work due there can be recorded.</string>
 	<key>UIApplicationSceneManifest</key>

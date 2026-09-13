@@ -47,6 +47,38 @@ Map<String, Object?> remoteTaskJson({
   };
 }
 
+/// A `completions` row in the shape PostgREST sends, as if the work had been
+/// recorded on the other phone.
+///
+/// `updated_at` defaults to `created_at`, which is what a completion that stands
+/// carries — the column only moves when the row is tombstoned (ADR 0004, and
+/// the column's doc comment in `data/database.dart`).
+Map<String, Object?> remoteCompletionJson({
+  required String id,
+  required String taskId,
+  required DateTime completedAt,
+  DateTime? createdAt,
+  DateTime? updatedAt,
+  DateTime? deletedAt,
+  String source = 'manual',
+  String? note,
+  String deviceId = 'the-other-phone',
+}) {
+  String? iso(DateTime? value) => value?.toUtc().toIso8601String();
+  final created = createdAt ?? completedAt;
+  return {
+    'id': id,
+    'task_id': taskId,
+    'completed_at': iso(completedAt),
+    'source': source,
+    'note': note,
+    'device_id': deviceId,
+    'created_at': iso(created),
+    'updated_at': iso(updatedAt ?? deletedAt ?? created),
+    'deleted_at': iso(deletedAt),
+  };
+}
+
 /// A local row, read out and converted the way a push would.
 Future<Map<String, Object?>> localTaskAsRemote(
   NemDatabase db,

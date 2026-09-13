@@ -55,14 +55,11 @@ class _ArchivedTile extends ConsumerWidget {
       subtitle: Text(
         [
           if (schedule != null) schedule.toLowerCase(),
-          last == null
-              ? 'never completed'
-              : 'last done ${formatDueDate(last)}',
+          last == null ? 'never completed' : 'last done ${formatDueDate(last)}',
         ].join(' · '),
       ),
       trailing: TextButton(
-        onPressed: () =>
-            ref.read(taskRepositoryProvider).restoreTask(task.id),
+        onPressed: () => ref.read(taskRepositoryProvider).restoreTask(task.id),
         child: const Text('Restore'),
       ),
       onTap: () => Navigator.of(context).push(

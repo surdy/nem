@@ -45,6 +45,17 @@ could invalidate them. They are caches (ADR 0004), never authoritative.
 States: `overdue` (due date in the past, badge shows the day count),
 `due_today`, `upcoming`.
 
+State is decided by comparing **whole calendar days**, not instants. A task due
+at 09:00 today stays `due_today` for the whole day rather than flipping to
+`overdue` at 09:01.
+
+`interval_unit` is one of `day`, `week`, `month`, `year`. Monthly and yearly
+intervals use calendar arithmetic rather than fixed durations, so they keep their
+day of the month, clamp in short months, and are unaffected by DST.
+
+`Soon` is unbounded — every upcoming task appears. Revisit if the list ever gets
+long enough to need a horizon.
+
 ---
 
 ## Schema
@@ -213,4 +224,8 @@ Not yet challenged. Flag any and I'll change it before P1.
 | `qr_flutter` | label rendering |
 | `flutter_local_notifications` + `timezone` | digest and reminders |
 | `supabase_flutter` | auth, Postgres, realtime, storage |
-| `flutter_riverpod` | state management |
+| `flutter_riverpod` | state management (manual providers, not codegen) |
+
+`build_runner` is pinned to `^2.15.1`, not the current `^2.16.1`: from 2.15.2 it
+requires `meta ^1.18.3`, while `flutter_test` on Flutter 3.44.8 pins `meta` to
+exactly 1.18.0. Revisit when the Flutter SDK moves.

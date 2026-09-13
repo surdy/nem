@@ -10,6 +10,22 @@ relabelled as UTC, which preserves the digits rather than converting them — an
 resolve each returned occurrence back to a real instant individually, against
 that date's offset in the stored zone.
 
+## Storage
+
+The wall-clock anchor and the zone id are stored inside the existing `rrule`
+column as RFC 5545's own notation for exactly that pair, rather than in extra
+columns:
+
+```
+DTSTART;TZID=Europe/London:20260106T000000
+RRULE:FREQ=WEEKLY;BYDAY=TU
+```
+
+So the fixed representation stays a single column (ADR 0005) and the
+calendar-export path stays open (ADR 0006). A bare `RRULE:` line with no
+`DTSTART` still parses, falling back to the task's start date and the device
+zone. Do not add a separate timezone column — it is already here.
+
 ## Considered options
 
 `teno_rrule`, which supports zone-aware recurrence natively and would remove the

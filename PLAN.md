@@ -225,6 +225,7 @@ Not yet challenged. Flag any and I'll change it before P1.
 |---|---|
 | `drift` | local SQLite, typed queries, migrations |
 | `rrule` | RFC 5545 parsing and occurrence expansion |
+| `flutter_timezone` | the device's IANA zone id, which `timezone` cannot supply |
 | `nfc_manager` | NFC read and NDEF write, both platforms |
 | `mobile_scanner` | camera QR and barcode capture |
 | `qr_flutter` | label rendering |

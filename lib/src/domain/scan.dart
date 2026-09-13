@@ -1,3 +1,4 @@
+import 'barcode.dart';
 import 'binding.dart';
 import 'due_status.dart';
 import 'target.dart';
@@ -40,19 +41,27 @@ class ScannedCode {
   /// Parses [raw] as read through [reader].
   factory ScannedCode.parse(String raw, ScanReader reader) {
     final targetId = targetIdFromScanUri(raw);
+    final kind = switch (reader) {
+      // An NFC tag is a tag whatever it carries. A third-party tag with a
+      // payload of its own is still bindable by that payload, which is #8's
+      // problem and not a reason to call it something else here.
+      ScanReader.nfc => BindingKind.tag,
+      ScanReader.camera =>
+        targetId == null ? BindingKind.barcode : BindingKind.label,
+    };
     return ScannedCode(
       raw: raw,
       reader: reader,
       isScanUri: targetId != null,
-      kind: switch (reader) {
-        // An NFC tag is a tag whatever it carries. A third-party tag with a
-        // payload of its own is still bindable by that payload, which is #8's
-        // problem and not a reason to call it something else here.
-        ScanReader.nfc => BindingKind.tag,
-        ScanReader.camera =>
-          targetId == null ? BindingKind.barcode : BindingKind.label,
+      kind: kind,
+      value: switch (kind) {
+        // A product code is canonicalised, because the two platforms do not
+        // report UPC-A the same way and a binding matches its value exactly
+        // (see [normalisedBarcode]). A tag's own payload is not: nothing reads
+        // it twice through two different frameworks.
+        BindingKind.barcode => normalisedBarcode(raw),
+        BindingKind.tag || BindingKind.label => targetId ?? raw.trim(),
       },
-      value: targetId ?? raw.trim(),
     );
   }
 
@@ -68,7 +77,8 @@ class ScannedCode {
   final BindingKind kind;
 
   /// What a binding stores for this code: the uuid out of `nem://t/<uuid>`, or
-  /// the raw code when it is not one of ours.
+  /// the code itself when it is not one of ours — canonicalised first if it is
+  /// a product code ([normalisedBarcode]).
   final String value;
 
   /// Whether this code carries `nem://t/<uuid>` (ADR 0009), which is what makes

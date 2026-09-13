@@ -9,6 +9,42 @@ import 'ids.dart';
 import 'target_repository.dart';
 import 'task_repository.dart';
 
+/// A code that already resolves to a different, live target.
+///
+/// One physical code means one target (ADR 0008), so binding a barcode that is
+/// already spoken for is refused rather than quietly taken over (#10). It is an
+/// exception rather than a returned outcome because every caller of
+/// [BindingRepository.bindUnclaimed] wants the binding and none of them has a
+/// sensible second plan.
+class BindingConflict implements Exception {
+  const BindingConflict({
+    required this.kind,
+    required this.value,
+    required this.boundTo,
+  });
+
+  final BindingKind kind;
+
+  /// The code, as it would have been stored.
+  final String value;
+
+  /// The target it already resolves to.
+  final Target boundTo;
+
+  /// What to tell somebody holding the thing.
+  ///
+  /// It names the target rather than saying "already bound", because the only
+  /// way out is to go there: the code is on a product they can see, and which
+  /// target it currently points at is the fact they are missing.
+  String get message =>
+      'That ${kind.displayLabel.toLowerCase()} is already bound to '
+      '${boundTo.name}. One code resolves to one target, so unbind it there, '
+      'or point it at this one from ${boundTo.name}.';
+
+  @override
+  String toString() => 'BindingConflict($message)';
+}
+
 /// Reads and writes bindings — the association between one scannable code and
 /// one target (CONTEXT.md — "Binding").
 ///
@@ -118,6 +154,53 @@ class BindingRepository {
             ),
           );
       return binding;
+    });
+  }
+
+  /// Binds [value] to [targetId], unless the code is already spoken for.
+  ///
+  /// The counterpart to [bind], which re-points on purpose. Re-pointing is the
+  /// right answer when somebody is looking at a code they already own and says
+  /// "this one means the back door now"; it is the wrong answer when a code is
+  /// bound by scanning it, because a barcode quietly changing which target it
+  /// resolves to is a binding lost without anybody being told (#10). So
+  /// provisioning by scan comes through here, and the repoint action does not.
+  ///
+  /// Throws [BindingConflict] when a live binding for `(kind, value)` names a
+  /// different target that this device can see. A binding whose target it
+  /// cannot see is deliberately not a conflict: a dangling reference is an
+  /// application-level unassignment (ADR 0011), and re-binding is the one
+  /// action that helps.
+  Future<Binding> bindUnclaimed({
+    required String targetId,
+    required BindingKind kind,
+    required String value,
+    DateTime? now,
+  }) async {
+    final trimmed = value.trim();
+    return _db.transaction(() async {
+      final existing = await findBinding(kind, trimmed);
+      if (existing != null && existing.targetId != targetId) {
+        final claimant =
+            await (_db.select(_db.targets)..where(
+                  (t) => t.id.equals(existing.targetId) & t.deletedAt.isNull(),
+                ))
+                .getSingleOrNull();
+        if (claimant != null) {
+          throw BindingConflict(
+            kind: kind,
+            value: trimmed,
+            boundTo: Target(
+              id: claimant.id,
+              name: claimant.name,
+              description: claimant.description,
+              createdAt: claimant.createdAt,
+              updatedAt: claimant.updatedAt,
+            ),
+          );
+        }
+      }
+      return bind(targetId: targetId, kind: kind, value: trimmed, now: now);
     });
   }
 

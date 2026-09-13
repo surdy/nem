@@ -197,6 +197,28 @@ void main() {
       expect(code.value, 'abc');
     });
 
+    test('a UPC-A parses to one value whichever platform read it', () {
+      // Android reports the twelve digits printed under the bars; iOS, which
+      // has no UPC-A symbology, reports the same code as an EAN-13 with a
+      // leading zero. Both have to reach the same binding.
+      final android = ScannedCode.parse('036000291452', ScanReader.camera);
+      final ios = ScannedCode.parse('0036000291452', ScanReader.camera);
+
+      expect(android.kind, BindingKind.barcode);
+      expect(ios.kind, BindingKind.barcode);
+      expect(ios.value, android.value);
+      expect(android.value, '036000291452');
+      // The raw read is kept as it arrived, so nothing has been lost.
+      expect(ios.raw, '0036000291452');
+    });
+
+    test('a tag\'s own payload is not canonicalised — nothing reads it '
+        'twice', () {
+      final code = ScannedCode.parse('0036000291452', ScanReader.nfc);
+      expect(code.kind, BindingKind.tag);
+      expect(code.value, '0036000291452');
+    });
+
     test('each kind carries the completion source it records', () {
       expect(BindingKind.tag.completionSource, CompletionSource.tag);
       expect(BindingKind.label.completionSource, CompletionSource.label);
@@ -325,6 +347,28 @@ void main() {
       final unknown = outcome as ScanUnknownCode;
       expect(unknown.code.kind, BindingKind.barcode);
       expect(unknown.code.value, '5010358210016');
+    });
+
+    test('a barcode bound on one platform resolves off the other', () async {
+      // Bound from an Android phone, scanned here as an iPhone reports it.
+      lookup.bindings = [
+        _binding(
+          targetId: boiler.id,
+          kind: BindingKind.barcode,
+          value: '036000291452',
+        ),
+      ];
+      lookup.tasks = [
+        _task(id: 'a', title: 'Change it', targetId: boiler.id, dueInDays: -2),
+      ];
+
+      final outcome = await resolver.resolve('0036000291452', now: _epoch);
+
+      expect(outcome, isA<ScanOneTaskDue>());
+      final one = outcome as ScanOneTaskDue;
+      expect(one.target.id, boiler.id);
+      // And the completion it leads to is sourced to the barcode.
+      expect(one.code.kind.completionSource, CompletionSource.barcode);
     });
 
     test('a nem URI nobody bound is also unknown — resolution goes through '

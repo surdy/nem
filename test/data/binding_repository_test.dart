@@ -188,4 +188,159 @@ void main() {
     expect(outcome, isA<ScanOneTaskDue>());
     expect((outcome as ScanOneTaskDue).task.title, 'Bleed the radiators');
   });
+
+  group('binding a code that may already be spoken for', () {
+    test('a free code binds', () async {
+      final binding = await bindings.bindUnclaimed(
+        targetId: boiler.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+
+      expect(binding.targetId, boiler.id);
+      expect(binding.kind, BindingKind.barcode);
+    });
+
+    test('a code already bound to another target is refused, and the '
+        'binding does not move', () async {
+      await bindings.bind(
+        targetId: door.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+
+      expect(
+        () => bindings.bindUnclaimed(
+          targetId: boiler.id,
+          kind: BindingKind.barcode,
+          value: '5010358210016',
+        ),
+        throwsA(isA<BindingConflict>()),
+      );
+
+      expect(
+        (await bindings.findBinding(
+          BindingKind.barcode,
+          '5010358210016',
+        ))?.targetId,
+        door.id,
+      );
+    });
+
+    test('the refusal names the target that has it, because going there is '
+        'the only way out', () async {
+      await bindings.bind(
+        targetId: door.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+
+      try {
+        await bindings.bindUnclaimed(
+          targetId: boiler.id,
+          kind: BindingKind.barcode,
+          value: '5010358210016',
+        );
+        fail('expected a BindingConflict');
+      } on BindingConflict catch (conflict) {
+        expect(conflict.boundTo.id, door.id);
+        expect(conflict.message, contains('The front door'));
+        expect(conflict.message, contains('barcode'));
+      }
+    });
+
+    test('re-binding a code to the target it already names is not a '
+        'conflict', () async {
+      final first = await bindings.bind(
+        targetId: boiler.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+      final second = await bindings.bindUnclaimed(
+        targetId: boiler.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+
+      expect(second.id, first.id);
+      expect((await bindings.bindingsForTarget(boiler.id)).length, 1);
+    });
+
+    test('a code whose target was deleted is free again', () async {
+      await bindings.bind(
+        targetId: door.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+      await targets.softDeleteTarget(door.id);
+
+      final binding = await bindings.bindUnclaimed(
+        targetId: boiler.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+
+      // A binding that names a target this device cannot see is an
+      // unassignment rather than an error (ADR 0011), and re-binding is the
+      // one action that helps.
+      expect(binding.targetId, boiler.id);
+    });
+
+    test(
+      'a code bound to a target that has not synced yet is free too',
+      () async {
+        await bindings.bind(
+          targetId: 'not-synced-yet',
+          kind: BindingKind.barcode,
+          value: '5010358210016',
+        );
+
+        final binding = await bindings.bindUnclaimed(
+          targetId: boiler.id,
+          kind: BindingKind.barcode,
+          value: '5010358210016',
+        );
+        expect(binding.targetId, boiler.id);
+      },
+    );
+
+    test('the kinds do not answer for each other', () async {
+      await bindings.bind(
+        targetId: door.id,
+        kind: BindingKind.tag,
+        value: '5010358210016',
+      );
+
+      // A tag carrying that string is a different code from a barcode reading
+      // it, so the barcode is still free.
+      final binding = await bindings.bindUnclaimed(
+        targetId: boiler.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+      expect(binding.targetId, boiler.id);
+    });
+
+    test('repointing on purpose still goes through bind, and still moves the '
+        'code', () async {
+      await bindings.bind(
+        targetId: door.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+      await bindings.bind(
+        targetId: boiler.id,
+        kind: BindingKind.barcode,
+        value: '5010358210016',
+      );
+
+      expect(
+        (await bindings.findBinding(
+          BindingKind.barcode,
+          '5010358210016',
+        ))?.targetId,
+        boiler.id,
+      );
+    });
+  });
 }

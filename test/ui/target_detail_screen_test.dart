@@ -226,4 +226,23 @@ void main() {
       await unmount(tester);
     });
   });
+
+  testWidgets('a barcode already on the thing can be adopted from here', (
+    tester,
+  ) async {
+    // The third kind of provisioning, alongside printing a label and writing a
+    // tag — and the only one that creates nothing, because the code was
+    // already printed on the box (CONTEXT.md — "Barcode").
+    await pumpDetail(tester);
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Bind a barcode'), findsOneWidget);
+
+    // Dismissed rather than tapped: what is behind it owns a camera, and this
+    // test is about the way in.
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+    await unmount(tester);
+  });
 }

@@ -19,14 +19,24 @@ enum DueStatus {
   };
 }
 
+/// Whole calendar days from [from] to [to], positive when [to] is the later of
+/// the two.
+///
+/// The one day count in nem. Every span the app shows — lateness, the gap
+/// between two completions, the reach of a trailing window — is a count of
+/// calendar days rather than of elapsed hours, and goes through here so the
+/// daylight saving correctness lives in exactly one place. See [_dateOnly] for
+/// why differencing the instants directly is wrong.
+int calendarDaysBetween(DateTime from, DateTime to) =>
+    _dateOnly(to).difference(_dateOnly(from)).inDays;
+
 /// Whole calendar days between [due] and [now], positive when [due] is in the
 /// past.
 ///
 /// Compared by calendar day rather than elapsed hours, so a task due at 09:00
 /// is not "1 day late" at 08:00 the following morning — it is one day late all
 /// of that day.
-int daysLate(DateTime due, DateTime now) =>
-    _dateOnly(now).difference(_dateOnly(due)).inDays;
+int daysLate(DateTime due, DateTime now) => calendarDaysBetween(due, now);
 
 /// Classifies a due date against [now].
 DueStatus dueStatusFor(DateTime due, DateTime now) {

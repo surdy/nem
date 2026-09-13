@@ -46,6 +46,23 @@ class TaskRepository {
     );
   }
 
+  /// One live task, or null once it is deleted — what the task detail screen
+  /// watches.
+  ///
+  /// Like [watchDueList], the last completion comes from the log rather than
+  /// from `tasks.last_completed_at` (ADR 0004).
+  Stream<Task?> watchTask(String taskId) {
+    final lastCompletedAt = _lastCompletedAtExpression();
+    final query = _db.select(_db.tasks).join([])
+      ..addColumns([lastCompletedAt])
+      ..where(_db.tasks.id.equals(taskId) & _db.tasks.deletedAt.isNull());
+    return query.watchSingleOrNull().map(
+      (row) => row == null
+          ? null
+          : _toDomain(row.readTable(_db.tasks), row.read(lastCompletedAt)),
+    );
+  }
+
   Future<List<Task>> allTasks() async {
     final lastCompletedAt = _lastCompletedAtExpression();
     final rows =
@@ -263,18 +280,34 @@ class TaskRepository {
   ///
   /// Tombstoned rows are left out: they are still on disk, but they no longer
   /// say that the work happened.
-  Future<List<Completion>> completionsFor(String taskId) async {
-    final rows =
-        await (_db.select(_db.completions)
-              ..where((c) => c.taskId.equals(taskId) & c.deletedAt.isNull())
-              ..orderBy([
-                (c) => OrderingTerm(
-                  expression: c.completedAt,
-                  mode: OrderingMode.desc,
-                ),
-              ]))
-            .get();
-    return rows.map(_toCompletion).toList();
+  Future<List<Completion>> completionsFor(String taskId) async =>
+      (await _liveCompletionsQuery(taskId).get()).map(_toCompletion).toList();
+
+  /// The same log as [completionsFor], kept live — what the history on the task
+  /// detail screen is built from.
+  ///
+  /// History reads this and only this: no part of it consults `tasks.due_date`
+  /// or `tasks.last_completed_at`, which are sort caches and not the record of
+  /// what happened (ADR 0004).
+  Stream<List<Completion>> watchCompletionsFor(String taskId) =>
+      _liveCompletionsQuery(
+        taskId,
+      ).watch().map((rows) => rows.map(_toCompletion).toList());
+
+  /// A task's completions that have not been tombstoned, most recent work
+  /// first.
+  ///
+  /// The tombstone filter is the whole point: a correction is a tombstone plus
+  /// a replacement row (ADR 0004), and history shows the work that stands, not
+  /// the version that was retracted.
+  SimpleSelectStatement<$CompletionsTable, CompletionRow> _liveCompletionsQuery(
+    String taskId,
+  ) {
+    return _db.select(_db.completions)
+      ..where((c) => c.taskId.equals(taskId) & c.deletedAt.isNull())
+      ..orderBy([
+        (c) => OrderingTerm(expression: c.completedAt, mode: OrderingMode.desc),
+      ]);
   }
 
   /// Recomputes the derived caches on every task from the completion log.

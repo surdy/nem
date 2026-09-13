@@ -16,7 +16,15 @@ enum CompletionSource {
 
   /// Resolved by scanning a pre-existing product barcode (CONTEXT.md —
   /// "Barcode").
-  barcode,
+  barcode;
+
+  /// How a completion of this source reads in the history — "By tag".
+  String get displayLabel => switch (this) {
+    CompletionSource.manual => 'By hand',
+    CompletionSource.tag => 'By tag',
+    CompletionSource.label => 'By label',
+    CompletionSource.barcode => 'By barcode',
+  };
 }
 
 /// A record that a task was performed at a particular moment (CONTEXT.md —

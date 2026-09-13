@@ -21,3 +21,6 @@ pubspec.lock
 *.keystore
 ios/Runner/GoogleService-Info.plist
 android/app/google-services.json
+
+# Agent worktrees
+.claude/worktrees/

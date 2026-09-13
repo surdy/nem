@@ -8,6 +8,7 @@ import '../domain/due_status.dart';
 import '../domain/task.dart';
 import 'due_list_screen.dart' show formatDueDate;
 import 'fixed_schedule_editor.dart' show UneditableRule;
+import 'task_actions.dart';
 
 /// A task and everything its completion log says about it.
 ///
@@ -25,9 +26,19 @@ class TaskDetailScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final task = ref.watch(taskProvider(taskId));
     final history = ref.watch(taskHistoryProvider(taskId));
+    final now = ref.watch(nowProvider);
+    final loaded = task.value;
 
     return Scaffold(
-      appBar: AppBar(title: Text(task.value?.title ?? 'Task')),
+      appBar: AppBar(
+        title: Text(loaded?.title ?? 'Task'),
+        actions: [
+          // Snooze, archive and their undos live here as well as on the due
+          // list row, because this is the only place an archived task can be
+          // reached from at all.
+          if (loaded != null) TaskActionsMenu(task: loaded, now: now),
+        ],
+      ),
       body: switch ((task, history)) {
         (AsyncError(:final error), _) || (_, AsyncError(:final error)) =>
           _Message(text: 'Could not load this task.\n$error'),
@@ -107,6 +118,27 @@ class _Schedule extends StatelessWidget {
                       ? theme.colorScheme.onSurfaceVariant
                       : theme.colorScheme.error,
                 ),
+              ),
+            ),
+          // The due date above IS the snooze date while a snooze is holding, so
+          // the chip says which kind of date it is rather than repeating it.
+          if (task.isSnoozedAt(now) || task.isArchived)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(
+                spacing: 8,
+                children: [
+                  if (task.isSnoozedAt(now)) const SnoozedChip(),
+                  if (task.isArchived)
+                    Chip(
+                      avatar: const Icon(Icons.archive_outlined, size: 16),
+                      label: const Text('Archived'),
+                      labelStyle: theme.textTheme.labelSmall,
+                      side: BorderSide.none,
+                      backgroundColor: theme.colorScheme.surfaceContainerHigh,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                ],
               ),
             ),
           if (task.notes != null)

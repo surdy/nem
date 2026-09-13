@@ -281,4 +281,56 @@ void main() {
     expect(find.text('HISTORY'), findsOneWidget);
     await unmount(tester);
   });
+
+  testWidgets('a task can be snoozed from here, and says it is snoozed', (
+    tester,
+  ) async {
+    final id = await weeklyTaskId();
+    await pumpDetail(tester, id);
+
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Snooze 1 week'));
+    await tester.pumpAndSettle();
+
+    // Pushed a week out from today, with no completion behind it.
+    expect(find.text('Snoozed'), findsOneWidget);
+    expect(find.textContaining('Due 17 Jul 2026'), findsOneWidget);
+    expect(find.textContaining('late'), findsNothing);
+    expect(await repository.completionsFor(id), isEmpty);
+
+    // And it can be taken back from the same menu.
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel snooze'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Snoozed'), findsNothing);
+
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await unmount(tester);
+  });
+
+  testWidgets('an archived task says so, and offers to be restored', (
+    tester,
+  ) async {
+    final id = await weeklyTaskId();
+    await repository.archiveTask(id, now: now);
+    await pumpDetail(tester, id);
+
+    expect(find.text('Archived'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+    // Nothing is offered that does not make sense for a retired task.
+    expect(find.text('Snooze 1 week'), findsNothing);
+    await tester.tap(find.text('Restore'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Archived'), findsNothing);
+    await unmount(tester);
+
+    expect((await repository.allTasks()).single.isArchived, isFalse);
+  });
 }

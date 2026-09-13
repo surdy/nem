@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/target_repository.dart';
 import 'package:nem/src/data/task_repository.dart';
+import 'package:nem/src/domain/due_status.dart';
 import 'package:nem/src/domain/fixed_schedule.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/domain/task.dart';
@@ -35,8 +36,8 @@ void main() {
 
   tearDown(() => db.close());
 
-  test('the schema is created at version 4', () async {
-    expect(db.schemaVersion, 4);
+  test('the schema is created at version 5', () async {
+    expect(db.schemaVersion, 5);
     expect(await repository.allTasks(), isEmpty);
   });
 
@@ -389,6 +390,273 @@ void main() {
       ]);
       expect(tasks.first.floatingSchedule, isNull);
       expect(tasks.last.fixedSchedule, isNull);
+    });
+  });
+
+  group('snooze', () {
+    final now = DateTime(2026, 6, 15, 10);
+
+    /// A task due 5 June — ten days before [now].
+    Future<String> overdueTask() async {
+      final task = await repository.createFloatingTask(
+        title: 'Replace the water filter',
+        intervalN: 4,
+        intervalUnit: IntervalUnit.day,
+        startDate: DateTime(2026, 6, 1),
+      );
+      return task.id;
+    }
+
+    test('moves the due date forward without writing a completion', () async {
+      final id = await overdueTask();
+
+      final snoozed = await repository.snoozeTask(
+        id,
+        n: 3,
+        unit: IntervalUnit.day,
+        now: now,
+      );
+
+      expect(snoozed?.dueDate, DateTime(2026, 6, 18, 10));
+      expect(snoozed?.snoozedUntil, DateTime(2026, 6, 18, 10));
+      expect(snoozed?.snoozedAt, now);
+      // The whole point: nothing says the work was done (ADR 0004).
+      expect(await repository.completionsFor(id), isEmpty);
+      expect(snoozed?.lastCompletedAt, isNull);
+    });
+
+    test('survives recomputeDerivedState, which is the whole reason it is '
+        'not stored in due_date', () async {
+      final id = await overdueTask();
+      await repository.snoozeTask(id, n: 3, unit: IntervalUnit.day, now: now);
+
+      // The recomputation that runs on every launch and after every sync pull.
+      // It finds nothing to correct, because the snooze is one of its inputs
+      // rather than something written over its output.
+      expect(await repository.recomputeDerivedState(), 0);
+
+      final task = (await repository.allTasks()).single;
+      expect(task.dueDate, DateTime(2026, 6, 18, 10));
+      expect(task.snoozedUntil, DateTime(2026, 6, 18, 10));
+
+      // And the cache column itself carries the snooze, so the due list still
+      // sorts on it in SQL.
+      final row = await db.select(db.tasks).getSingle();
+      expect(row.dueDate, DateTime(2026, 6, 18, 10));
+    });
+
+    test('takes an overdue task off the overdue list', () async {
+      final id = await overdueTask();
+      await repository.snoozeTask(id, n: 3, unit: IntervalUnit.day, now: now);
+
+      final task = (await repository.watchDueList().first).single;
+      expect(task.dueStatusAt(now), DueStatus.upcoming);
+      expect(task.isSnoozedAt(now), isTrue, reason: 'not merely upcoming');
+    });
+
+    test('stops holding once the snooze comes due, and lateness counts from '
+        'the snooze', () async {
+      final id = await overdueTask();
+      await repository.snoozeTask(id, n: 3, unit: IntervalUnit.day, now: now);
+      final task = (await repository.allTasks()).single;
+
+      expect(task.isSnoozedAt(DateTime(2026, 6, 18, 9)), isFalse);
+      expect(task.dueStatusAt(DateTime(2026, 6, 18, 9)), DueStatus.dueToday);
+      expect(
+        overdueLabel(task.dueDate!, DateTime(2026, 6, 20, 9)),
+        '2 days late',
+        reason: 'late against the snooze, not the fifteen days since 5 June',
+      );
+    });
+
+    test('snoozing again pushes out from the snooze, not from the '
+        'schedule', () async {
+      final id = await overdueTask();
+      await repository.snoozeTask(id, n: 3, unit: IntervalUnit.day, now: now);
+      final twice = await repository.snoozeTask(
+        id,
+        n: 3,
+        unit: IntervalUnit.day,
+        now: DateTime(2026, 6, 16, 10),
+      );
+      expect(twice?.dueDate, DateTime(2026, 6, 21, 10));
+    });
+
+    test('cancelling it gives the schedule its due date back', () async {
+      final id = await overdueTask();
+      await repository.snoozeTask(id, n: 3, unit: IntervalUnit.day, now: now);
+      await repository.cancelSnooze(id, now: now);
+
+      final task = (await repository.allTasks()).single;
+      expect(task.snoozedUntil, isNull);
+      expect(task.dueDate, DateTime(2026, 6, 5));
+      expect(task.isSnoozedAt(now), isFalse);
+    });
+
+    test('doing the work spends the snooze, and undo brings it back', () async {
+      final id = await overdueTask();
+      await repository.snoozeTask(id, n: 1, unit: IntervalUnit.week, now: now);
+      expect(
+        (await repository.allTasks()).single.dueDate,
+        DateTime(2026, 6, 22, 10),
+      );
+
+      final completion = await repository.recordCompletion(
+        id,
+        completedAt: DateTime(2026, 6, 16, 9),
+        now: DateTime(2026, 6, 16, 9),
+      );
+
+      // Four days from the completion, not the week the snooze reached for:
+      // the completion is the newer statement.
+      final completed = (await repository.allTasks()).single;
+      expect(completed.dueDate, DateTime(2026, 6, 20, 9));
+      expect(
+        completed.snoozedUntil,
+        DateTime(2026, 6, 22, 10),
+        reason: 'nothing is deleted to spend a snooze',
+      );
+
+      await repository.undoCompletion(
+        completion,
+        now: DateTime(2026, 6, 16, 9),
+      );
+
+      // Tombstoning the completion puts the snooze back in charge, without the
+      // snoozed due date ever having been stored twice (ADR 0004).
+      expect(
+        (await repository.allTasks()).single.dueDate,
+        DateTime(2026, 6, 22, 10),
+      );
+    });
+
+    test('a fixed schedule keeps its rule, and its occurrences', () async {
+      final task = await repository.createFixedTask(
+        title: 'Put the bins out',
+        schedule: tuesdays(),
+      );
+      final rule = task.rrule;
+
+      final snoozed = await repository.snoozeTask(
+        task.id,
+        n: 3,
+        unit: IntervalUnit.day,
+        now: DateTime(2026, 1, 6, 10),
+      );
+
+      // The stored rule is byte-identical, so the calendar it generates has not
+      // moved: the snooze sits on top of the occurrence, not in the rule
+      // (ADR 0007).
+      expect(snoozed?.rrule, rule);
+      expect(
+        snoozed!.fixedSchedule!
+            .occurrencesFrom(DateTime(2026, 1, 6))
+            .take(3)
+            .map(date),
+        ['2026-01-06', '2026-01-13', '2026-01-20'],
+      );
+      // The due date moved, though, and it is the snooze.
+      expect(snoozed.dueDate, DateTime(2026, 1, 9, 10));
+      expect(date(snoozed.scheduledDueDate!), '2026-01-06');
+    });
+
+    test('snoozing is an edit and bumps updated_at, unlike a '
+        'completion', () async {
+      final task = await repository.createFloatingTask(
+        title: 'Replace the water filter',
+        intervalN: 4,
+        intervalUnit: IntervalUnit.day,
+        startDate: DateTime(2026, 6, 1),
+        now: DateTime(2026, 6, 1, 8),
+      );
+      expect(task.updatedAt, DateTime(2026, 6, 1, 8));
+
+      await repository.snoozeTask(
+        task.id,
+        n: 3,
+        unit: IntervalUnit.day,
+        now: now,
+      );
+
+      // A completion deliberately leaves `updated_at` alone; a snooze is an
+      // edit of the task and has to win last-write-wins when sync arrives.
+      expect((await repository.allTasks()).single.updatedAt, now);
+    });
+  });
+
+  group('archive', () {
+    final now = DateTime(2026, 6, 15, 10);
+
+    Future<String> completedTask() async {
+      final task = await repository.createFloatingTask(
+        title: 'Descale the kettle',
+        intervalN: 30,
+        intervalUnit: IntervalUnit.day,
+        startDate: DateTime(2026, 1, 1),
+      );
+      await repository.recordCompletion(
+        task.id,
+        completedAt: DateTime(2026, 2, 1, 9),
+        now: DateTime(2026, 2, 1, 9),
+      );
+      return task.id;
+    }
+
+    test('hides the task from the due list and keeps its '
+        'completions', () async {
+      final id = await completedTask();
+      await repository.archiveTask(id, now: now);
+
+      expect(await repository.watchDueList().first, isEmpty);
+      // Nothing in the log was touched — that history is why the row is kept.
+      expect(
+        (await repository.completionsFor(id)).single.completedAt,
+        DateTime(2026, 2, 1, 9),
+      );
+      expect((await repository.watchTask(id).first)?.isArchived, isTrue);
+    });
+
+    test('archived tasks can be browsed', () async {
+      final id = await completedTask();
+      await repository.archiveTask(id, now: now);
+
+      final archived = (await repository.watchArchivedTasks().first).single;
+      expect(archived.id, id);
+      expect(archived.title, 'Descale the kettle');
+      expect(archived.lastCompletedAt, DateTime(2026, 2, 1, 9));
+    });
+
+    test('and restored, with their history and their schedule', () async {
+      final id = await completedTask();
+      await repository.archiveTask(id, now: now);
+      await repository.restoreTask(id, now: now);
+
+      expect(await repository.watchArchivedTasks().first, isEmpty);
+      final task = (await repository.watchDueList().first).single;
+      expect(task.id, id);
+      expect(task.isArchived, isFalse);
+      // The schedule kept running underneath: 30 days after 1 February.
+      expect(task.dueDate, DateTime(2026, 3, 3, 9));
+      expect((await repository.completionsFor(id)).length, 1);
+    });
+
+    test('the due list and the archive are complements', () async {
+      final archived = await completedTask();
+      await repository.createFloatingTask(
+        title: 'Water the plants',
+        intervalN: 3,
+        intervalUnit: IntervalUnit.day,
+        startDate: DateTime(2026, 6, 1),
+      );
+      await repository.archiveTask(archived, now: now);
+
+      expect((await repository.watchDueList().first).map((t) => t.title), [
+        'Water the plants',
+      ]);
+      expect(
+        (await repository.watchArchivedTasks().first).map((t) => t.title),
+        ['Descale the kettle'],
+      );
     });
   });
 }

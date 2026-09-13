@@ -5,9 +5,11 @@ import '../app/providers.dart';
 import '../domain/due_list.dart';
 import '../domain/due_status.dart';
 import '../domain/task.dart';
+import 'archived_tasks_screen.dart';
 import 'create_task_screen.dart';
 import 'scan_screen.dart';
 import 'settings_screen.dart';
+import 'task_actions.dart';
 import 'task_detail_screen.dart';
 
 /// The home screen: everything due, grouped Overdue → Today → Soon.
@@ -28,6 +30,15 @@ class DueListScreen extends ConsumerWidget {
             onPressed: () => Navigator.of(
               context,
             ).push(MaterialPageRoute<void>(builder: (_) => const ScanScreen())),
+          ),
+          IconButton(
+            icon: const Icon(Icons.archive_outlined),
+            tooltip: 'Archived',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const ArchivedTasksScreen(),
+              ),
+            ),
           ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
@@ -141,6 +152,9 @@ class _TaskTile extends ConsumerWidget {
     final due = task.dueDate;
     final late = due == null ? null : overdueLabel(due, now);
     final schedule = task.scheduleLabel;
+    // A snoozed task sits in Soon alongside everything merely upcoming, so the
+    // chip is what tells the two apart.
+    final isSnoozed = task.isSnoozedAt(now);
 
     return ListTile(
       leading: IconButton(
@@ -155,9 +169,13 @@ class _TaskTile extends ConsumerWidget {
           if (schedule != null) schedule.toLowerCase(),
         ].join(' · '),
       ),
-      trailing: late == null
-          ? null
-          : Chip(
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isSnoozed)
+            const SnoozedChip()
+          else if (late != null)
+            Chip(
               label: Text(late),
               labelStyle: theme.textTheme.labelSmall?.copyWith(
                 color: theme.colorScheme.onErrorContainer,
@@ -166,6 +184,9 @@ class _TaskTile extends ConsumerWidget {
               side: BorderSide.none,
               visualDensity: VisualDensity.compact,
             ),
+          TaskActionsMenu(task: task, now: now),
+        ],
+      ),
       isThreeLine: task.notes != null,
       // Tapping the row opens the task's history; the tick stays on the
       // leading button, so opening it cannot complete anything by accident.

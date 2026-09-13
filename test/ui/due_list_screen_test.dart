@@ -10,6 +10,8 @@ import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/ui/due_list_screen.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 
+import '../notifications/fake_digest_notifier.dart';
+
 void main() {
   late NemDatabase db;
   late TaskRepository repository;
@@ -31,6 +33,7 @@ void main() {
       ProviderScope(
         overrides: [
           databaseProvider.overrideWithValue(db),
+          digestNotifierProvider.overrideWithValue(FakeDigestNotifier()),
           nowProvider.overrideWithValue(now),
         ],
         child: const MaterialApp(home: DueListScreen()),
@@ -151,6 +154,16 @@ void main() {
     // Back where it started: overdue by the same ten days, no live completion.
     expect((await repository.allTasks()).single.lastCompletedAt, isNull);
     expect(find.text('10 days late'), findsOneWidget);
+    await unmount(tester);
+  });
+
+  testWidgets('the digest is set up from here', (tester) async {
+    await pumpDueList(tester);
+
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Daily digest'), findsOneWidget);
     await unmount(tester);
   });
 

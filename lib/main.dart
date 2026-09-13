@@ -21,6 +21,14 @@ Future<void> main() async {
   // call rather than drift's `beforeOpen`, which fires on every database open.
   await container.read(taskRepositoryProvider).recomputeDerivedState();
 
+  // Prepares the plugin and the time zone database, and schedules the digest
+  // against the due dates just recomputed. No permission is requested here —
+  // the iOS prompt only ever appears once, and spending it on a cold first
+  // launch, before the user has seen what nem is, wastes it. It is asked for
+  // when the digest is switched on instead.
+  await container.read(digestNotifierProvider).initialize();
+  await container.read(digestSchedulerProvider).refresh();
+
   runApp(
     UncontrolledProviderScope(container: container, child: const NemApp()),
   );

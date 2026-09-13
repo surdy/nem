@@ -17,9 +17,11 @@ dependencies:
   # RFC 5545 parsing and occurrence expansion for fixed schedules (ADR 0006).
   # UTC-only by design, which is why ADR 0010's relabelling dance exists.
   rrule: ^0.2.18
-  # The IANA tz database, used to resolve each expanded wall-clock occurrence
-  # to a real instant (ADR 0010). Already earmarked in PLAN.md for reminders.
+  # The IANA tz database. Resolves each expanded wall-clock occurrence to a real
+  # instant (ADR 0010), and is what zonedSchedule needs for the digest.
   timezone: ^0.11.1
+  # The daily digest.
+  flutter_local_notifications: ^22.3.0
   # The only way to learn the device's IANA zone id; `timezone` ships the
   # database but cannot say which zone the device is in.
   flutter_timezone: ^5.1.0

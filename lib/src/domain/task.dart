@@ -29,8 +29,8 @@ class Task {
   final String title;
   final String? notes;
 
-  /// The target this task is done on. Targets arrive in P2, so this is always
-  /// null for now.
+  /// The target this task is done on (ADR 0008), or null when the work is not
+  /// attached to any one place or object.
   final String? targetId;
 
   final ScheduleMode scheduleMode;

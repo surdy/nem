@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../app/providers.dart';
 import '../domain/interval_unit.dart';
 import '../domain/schedule.dart';
+import '../domain/target.dart';
 import 'due_list_screen.dart' show formatDueDate;
 
 /// Creates a task with a floating schedule.
@@ -21,6 +22,11 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
   final _intervalController = TextEditingController(text: '3');
 
   IntervalUnit _unit = IntervalUnit.day;
+
+  /// The target this task is done on, or null for work attached to nothing
+  /// physical (ADR 0008).
+  String? _targetId;
+
   late DateTime _startDate = _today();
   bool _saving = false;
 
@@ -62,6 +68,7 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
           .createFloatingTask(
             title: _titleController.text.trim(),
             notes: _notesController.text,
+            targetId: _targetId,
             intervalN: _intervalN!,
             intervalUnit: _unit,
             startDate: _startDate,
@@ -85,6 +92,7 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
   @override
   Widget build(BuildContext context) {
     final previewDue = _previewDueDate;
+    final targets = ref.watch(targetListProvider).value ?? const <Target>[];
 
     return Scaffold(
       appBar: AppBar(title: const Text('New task')),
@@ -112,6 +120,27 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
               textCapitalization: TextCapitalization.sentences,
               decoration: const InputDecoration(labelText: 'Notes (optional)'),
             ),
+            // Offered only once there is something to choose. A target is a
+            // physical place or object, so the list is empty until one has been
+            // created, and an empty dropdown is just a dead control.
+            if (targets.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String?>(
+                initialValue: _targetId,
+                decoration: const InputDecoration(
+                  labelText: 'Target (optional)',
+                ),
+                items: [
+                  const DropdownMenuItem<String?>(child: Text('No target')),
+                  for (final target in targets)
+                    DropdownMenuItem<String?>(
+                      value: target.id,
+                      child: Text(target.name),
+                    ),
+                ],
+                onChanged: (value) => setState(() => _targetId = value),
+              ),
+            ],
             const SizedBox(height: 32),
             Text(
               'FLOATING SCHEDULE',

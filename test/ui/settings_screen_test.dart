@@ -39,6 +39,15 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// Unmounts the tree and drains the zero-duration timer drift schedules when
+  /// its query streams are cancelled, so the test does not end with a pending
+  /// timer. Needed since #11 put the sync settings — which watch a drift query
+  /// — on this screen.
+  Future<void> unmount(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(Duration.zero);
+  }
+
   Future<void> addDueTask(WidgetTester tester) =>
       TaskRepository(db).createFloatingTask(
         title: 'Water the plants',
@@ -56,6 +65,8 @@ void main() {
       isFalse,
     );
     expect(find.text('8:00 AM'), findsOneWidget);
+
+    await unmount(tester);
   });
 
   testWidgets('shows the stored time', (tester) async {
@@ -69,6 +80,8 @@ void main() {
     await pumpSettings(tester);
 
     expect(find.text('7:30 PM'), findsOneWidget);
+
+    await unmount(tester);
   });
 
   testWidgets('switching the digest on stores it and schedules', (
@@ -82,6 +95,8 @@ void main() {
 
     expect((await settings.read()).isEnabled, isTrue);
     expect(notifier.scheduled, isNotEmpty);
+
+    await unmount(tester);
   });
 
   testWidgets('asks for permission at the moment the digest is turned on', (
@@ -95,6 +110,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(notifier.requestCount, 1);
+
+    await unmount(tester);
   });
 
   testWidgets('does not ask again when permission is already granted', (
@@ -107,6 +124,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(notifier.requestCount, 0);
+
+    await unmount(tester);
   });
 
   testWidgets('says so when permission is refused, and stays on', (
@@ -122,6 +141,8 @@ void main() {
 
     expect(find.textContaining('Notifications are turned off'), findsOneWidget);
     expect((await settings.read()).isEnabled, isTrue);
+
+    await unmount(tester);
   });
 
   testWidgets('no warning while notifications are allowed', (tester) async {
@@ -135,6 +156,8 @@ void main() {
     await pumpSettings(tester);
 
     expect(find.textContaining('Notifications are turned off'), findsNothing);
+
+    await unmount(tester);
   });
 
   testWidgets('switching the digest off takes back what was pending', (
@@ -155,5 +178,7 @@ void main() {
     expect((await settings.read()).isEnabled, isFalse);
     expect(notifier.scheduled, isEmpty);
     expect(notifier.cancelCount, greaterThan(0));
+
+    await unmount(tester);
   });
 }

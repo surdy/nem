@@ -6,6 +6,7 @@ import 'package:nem/src/data/target_repository.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/binding.dart';
 import 'package:nem/src/domain/interval_unit.dart';
+import 'package:nem/src/sync/outbox_store.dart';
 
 /// The schema version 1 `tasks` table, exactly as drift created it before
 /// completions existed. A device upgrading from the first build has this on
@@ -70,6 +71,16 @@ const _v4Schema = [
   'PRAGMA user_version = 4',
 ];
 
+/// What schema version 5 added on top of [_v4Schema] — the two snooze columns.
+/// A device that took the snooze build but not the sync one has this on disk,
+/// and no outbox at all.
+const _v5Schema = [
+  ..._v4Schema,
+  'ALTER TABLE tasks ADD COLUMN snoozed_until INTEGER NULL',
+  'ALTER TABLE tasks ADD COLUMN snoozed_at INTEGER NULL',
+  'PRAGMA user_version = 5',
+];
+
 /// Inserts the one task every migration test starts from.
 const _insertTask =
     'INSERT INTO tasks (id, title, schedule_mode, interval_n, '
@@ -127,7 +138,7 @@ void main() {
     expect(task.lastCompletedAt, isNull);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 5);
+    expect(version.data.values.single, 6);
 
     // And the new tables are usable, indexes and foreign key included.
     final completion = await repository.recordCompletion(
@@ -210,7 +221,7 @@ void main() {
     expect((await targets.allTargets()).single.id, target.id);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 5);
+    expect(version.data.values.single, 6);
   });
 
   test('upgrading from version 3 adds bindings and keeps the targets and '
@@ -272,7 +283,7 @@ void main() {
     );
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 5);
+    expect(version.data.values.single, 6);
 
     final indexes = await db
         .customSelect(
@@ -350,7 +361,7 @@ void main() {
     expect(task.dueDate, DateTime(2026, 4, 4, 9));
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 5);
+    expect(version.data.values.single, 6);
 
     // And the new columns are usable: a snooze written after the upgrade takes
     // effect and survives a recomputation.
@@ -374,6 +385,90 @@ void main() {
     expect(
       columns.map((row) => row.data['name']),
       containsAll(<String>['snoozed_until', 'snoozed_at', 'is_archived']),
+    );
+  });
+
+  test('upgrading from version 5 adds the outbox and queues nothing '
+      'retrospectively', () async {
+    final startDate = DateTime(2026, 3, 1, 9);
+    final dueDate = DateTime(2026, 3, 31, 9);
+    final completedAt = DateTime(2026, 3, 5, 9);
+
+    final db = NemDatabase(
+      NativeDatabase.memory(
+        setup: (raw) {
+          for (final statement in _v5Schema) {
+            raw.execute(statement);
+          }
+          raw.execute(_insertTask, [
+            'task-1',
+            'Replace the water filter',
+            'floating',
+            30,
+            'day',
+            _seconds(startDate),
+            _seconds(dueDate),
+            _seconds(startDate),
+            _seconds(startDate),
+          ]);
+          raw.execute(
+            'INSERT INTO completions (id, task_id, completed_at, source, '
+            'device_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+            [
+              'completion-1',
+              'task-1',
+              _seconds(completedAt),
+              'manual',
+              'device-1',
+              _seconds(completedAt),
+            ],
+          );
+        },
+      ),
+    );
+    addTearDown(db.close);
+
+    final repository = TaskRepository(db);
+    final outbox = OutboxStore(db);
+
+    // The upgrade only adds a table: the task, its completion and the due date
+    // derived from that completion are untouched (ADR 0004).
+    final task = (await repository.allTasks()).single;
+    expect(task.id, 'task-1');
+    expect(task.lastCompletedAt, completedAt);
+    expect(task.dueDate, DateTime(2026, 4, 4, 9));
+
+    final version = await db.customSelect('PRAGMA user_version').getSingle();
+    expect(version.data.values.single, 6);
+
+    // Nothing is queued by the upgrade itself. A device upgrading into this
+    // build has no backend configured, and what it already holds is queued by
+    // `SyncEngine.seed` the first time one is — not by a migration that would
+    // have to guess.
+    expect(await outbox.count(), 0);
+
+    // And the new table works: the next write to the task queues it, once.
+    await repository.snoozeTask(
+      'task-1',
+      n: 3,
+      unit: IntervalUnit.day,
+      now: DateTime(2026, 4, 4, 9),
+    );
+    await repository.archiveTask('task-1', now: DateTime(2026, 4, 4, 10));
+    final entries = await outbox.pending();
+    expect(entries, hasLength(1));
+    expect(entries.single.rowId, 'task-1');
+    expect(entries.single.enqueuedAt, DateTime(2026, 4, 4, 9));
+
+    final indexes = await db
+        .customSelect(
+          "SELECT name FROM sqlite_master WHERE type = 'index' "
+          "AND tbl_name = 'outbox'",
+        )
+        .get();
+    expect(
+      indexes.map((row) => row.data['name']),
+      contains('idx_outbox_enqueued_at'),
     );
   });
 }

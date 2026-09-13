@@ -51,6 +51,24 @@
 			</array>
 		</dict>
 	</dict>
+	<!-- Where a magic link comes back to (#11). The same custom scheme the
+	     tags carry (ADR 0009), on a host of its own — `nem://t/<uuid>` resolves
+	     a target and `nem://login-callback/` finishes a sign-in. iOS registers
+	     the scheme; supabase_flutter picks the URI up and completes the PKCE
+	     exchange. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.surdy.nem</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>nem</string>
+			</array>
+		</dict>
+	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

@@ -205,8 +205,10 @@ class Bindings extends Table {
 
 /// The `sync_state` table from PLAN.md — device-local key/value state.
 ///
-/// Sync itself is P3, but the device id it holds is needed now: every
-/// completion records the device that wrote it.
+/// Holds the device id every completion records, the digest's configuration,
+/// the Supabase base URL and anon key (ADR 0002), and the per-table pull
+/// cursors. Never pushed: sync moves rows of the domain tables, and this is
+/// not one of them.
 class SyncState extends Table {
   TextColumn get key => text()();
   TextColumn get value => text()();
@@ -215,13 +217,53 @@ class SyncState extends Table {
   Set<Column<Object>> get primaryKey => {key};
 }
 
-@DriftDatabase(tables: [Tasks, Completions, Targets, Bindings, SyncState])
+/// Rows this device has changed and not yet pushed (PLAN.md — Sync).
+///
+/// A *dirty set*, not a log of mutations: an entry names a row, and the push
+/// reads that row's current state out of SQLite when it drains. That is what
+/// makes it right rather than merely cheap — SQLite is the source of truth
+/// (ADR 0001), so the only thing worth sending is what the row says *now*.
+/// Editing a task five times offline leaves one entry and pushes once, and a
+/// replayed or duplicated drain cannot resurrect an intermediate value that no
+/// longer exists anywhere.
+///
+/// The primary key is `(table_name, row_id)`, which is what collapses those
+/// five edits into one entry. [enqueuedAt] is the *first* time the row went
+/// dirty and is not bumped by later edits, so the drain order is the order the
+/// rows were first touched — a task is pushed before a completion recorded
+/// against it.
+@DataClassName('OutboxRow')
+@TableIndex(name: 'idx_outbox_enqueued_at', columns: {#enqueuedAt})
+class Outbox extends Table {
+  /// The SQL name of the table the row lives in — `tasks`, and from #12 the
+  /// rest. Named explicitly because drift's `Table` already owns the
+  /// `tableName` getter.
+  TextColumn get pendingTable => text().named('table_name')();
+
+  TextColumn get rowId => text()();
+
+  DateTimeColumn get enqueuedAt => dateTime()();
+
+  /// How many drains have tried and failed on this row. Kept for the backoff
+  /// and so a row that can never be pushed is visible rather than silent.
+  IntColumn get attempts => integer().withDefault(const Constant(0))();
+
+  /// The last failure's message, for the same reason.
+  TextColumn get lastError => text().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {pendingTable, rowId};
+}
+
+@DriftDatabase(
+  tables: [Tasks, Completions, Targets, Bindings, SyncState, Outbox],
+)
 class NemDatabase extends _$NemDatabase {
   NemDatabase([QueryExecutor? executor])
     : super(executor ?? driftDatabase(name: 'nem'));
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -261,6 +303,18 @@ class NemDatabase extends _$NemDatabase {
       if (from < 5) {
         await m.addColumn(tasks, tasks.snoozedUntil);
         await m.addColumn(tasks, tasks.snoozedAt);
+      }
+      // v6 adds the outbox (#11). Nothing on any existing table changes, and
+      // the table starts empty rather than pre-filled: a device upgrading into
+      // this build has no backend configured yet, and what it already holds is
+      // seeded into the outbox the first time one is (`SyncEngine.seed`), not
+      // here. A device that never configures a backend simply accumulates an
+      // entry per row it edits and nothing ever drains them, which costs a row
+      // each and changes nothing else (ADR 0001 — the app is whole with no
+      // account at all).
+      if (from < 6) {
+        await m.createTable(outbox);
+        await m.create(idxOutboxEnqueuedAt);
       }
     },
     beforeOpen: (details) async {

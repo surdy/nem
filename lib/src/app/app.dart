@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../notifications/local_reminder_notifier.dart';
+import '../sync/sync_providers.dart';
 import '../ui/home_shell.dart';
 import '../ui/tag_launch_host.dart';
 import '../ui/task_detail_screen.dart';
@@ -91,6 +94,13 @@ class _NemAppState extends ConsumerState<NemApp> {
     // Also re-arms that timer, which is what picks up a timezone changed in the
     // system settings — leaving nem to change it is what got us here.
     ref.read(currentDayProvider.notifier).sync();
+
+    // Pushes what was written while nem was away and pulls what the other
+    // device wrote (PLAN.md — Sync: "on foreground"). Returns immediately
+    // having done nothing on a device with no backend configured, which is why
+    // this is safe to call unconditionally and why nothing here is awaited —
+    // the foreground must not wait on a network.
+    unawaited(ref.read(syncStatusProvider.notifier).sync());
   }
 
   @override

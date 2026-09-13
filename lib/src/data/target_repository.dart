@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 
 import '../domain/target.dart';
+import '../sync/outbox_store.dart';
 import 'database.dart';
 import 'ids.dart';
 
@@ -14,6 +15,8 @@ class TargetRepository {
   TargetRepository(this._db);
 
   final NemDatabase _db;
+
+  late final OutboxStore _outbox = OutboxStore(_db);
 
   /// Live targets, alphabetically.
   Stream<List<Target>> watchTargets() {
@@ -108,6 +111,11 @@ class TargetRepository {
   Future<void> softDeleteTarget(String id, {DateTime? now}) async {
     final timestamp = now ?? DateTime.now();
     await _db.transaction(() async {
+      // Read before the write, so the rows about to be unassigned can be
+      // queued: once `target_id` is null there is no way to find them again.
+      final affected = await (_db.select(
+        _db.tasks,
+      )..where((t) => t.targetId.equals(id))).get();
       await (_db.update(_db.tasks)..where((t) => t.targetId.equals(id))).write(
         TasksCompanion(
           targetId: const Value(null),
@@ -116,6 +124,16 @@ class TargetRepository {
           updatedAt: Value(timestamp),
         ),
       );
+      // The unassignment is an edit of the *task*, so it is the task that has
+      // to be pushed — otherwise the other device keeps showing the work at a
+      // target this one has deleted (#11; targets themselves arrive in #12).
+      for (final task in affected) {
+        await _outbox.enqueue(
+          _db.tasks.actualTableName,
+          task.id,
+          now: timestamp,
+        );
+      }
       await (_db.update(_db.targets)..where((t) => t.id.equals(id))).write(
         TargetsCompanion(
           deletedAt: Value(timestamp),

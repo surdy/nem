@@ -22,6 +22,7 @@ Flutter, iOS + Android, one person on two devices.
 | [0008](./docs/adr/0008-a-tag-identifies-a-target-not-a-task.md) | A tag identifies a target, not a task |
 | [0009](./docs/adr/0009-custom-uri-scheme-forgoing-ios-background-scanning.md) | Custom URI scheme on tags, forgoing iOS background scanning |
 | [0010](./docs/adr/0010-recurrence-expands-in-floating-wall-clock-time.md) | Recurrence expands in floating wall-clock time, resolved per occurrence |
+| [0011](./docs/adr/0011-no-foreign-key-on-task-target-id.md) | No foreign key constraint on a task's target |
 
 Settled without an ADR, because each is either obvious or cheap to reverse:
 Flutter as the stack, iOS + Android as targets, the daily digest plus per-task
@@ -78,7 +79,7 @@ bindings(
 
 tasks(
   id uuid pk, title text, notes text,
-  target_id uuid fk null,
+  target_id uuid null,            -- deliberately no FK, see ADR 0011
   schedule_mode text check (schedule_mode in ('floating','fixed')),
   interval_n int null, interval_unit text null,   -- floating only
   rrule text null,                                -- fixed only
@@ -111,6 +112,9 @@ photos(
 
 sync_state(key text pk, value text)   -- pull cursor, device id
 ```
+
+Soft-deleting a target leaves its tasks intact and unassigned: they keep their
+schedules and stay on the due list, they simply lose their target.
 
 A task's two schedule representations are mutually exclusive nullable column
 sets (ADR 0005). `due_date` is denormalised so the due list is one indexed query.
@@ -170,7 +174,9 @@ as a label, exportable as PNG/PDF; or bind an existing product barcode.
 
 ## Phases
 
-Each ends with something usable.
+Each ends with something usable. This is the intended sequence, not a record of
+what happened — tickets are built in dependency order rather than phase order
+wherever the graph allows it, so some P2 work has landed alongside P1.
 
 **P1 — a working tracker.** Flutter project, drift schema, task CRUD, both
 schedule modes, the RRULE editor, the due list, manual completion with undo,

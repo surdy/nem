@@ -124,6 +124,13 @@ unseen work and lose it. The id is part of the pair because two rows can share a
 timestamp.
 _Avoid_: watermark, offset, checkpoint, last sync
 
+**Trigger**:
+One of the occasions that runs a sync — launch, foreground, a settings change,
+sign-in, Sync now, the retry timer, or a notification from the backend. A
+trigger says only that a sync should happen; it never carries rows, so no
+trigger can be a source of data.
+_Avoid_: event, push, notification, nudge
+
 **Seed**:
 Queueing everything already on a device the first time a backend is configured,
 so existing history is pushed rather than stranded.

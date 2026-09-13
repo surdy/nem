@@ -57,6 +57,11 @@ day of the month, clamp in short months, and are unaffected by DST.
 `Soon` is unbounded — every upcoming task appears. Revisit if the list ever gets
 long enough to need a horizon.
 
+The SQL files in `supabase/migrations/` are applied in filename order, and the
+realtime publication file must sort **last** because it names every synced table.
+Adding a table means re-dating it. There is a test on this, but it is a rule the
+filenames themselves do not announce.
+
 ---
 
 ## Schema
@@ -210,6 +215,14 @@ Not yet challenged. Flag any and I'll change it before P1.
 2. State management is Riverpod 3, using manual providers rather than
    `@riverpod` codegen — Riverpod 3 reversed its own guidance and now
    recommends codegen only when build_runner is already in play.
+
+   Riverpod 3 **pauses a provider nothing is listening to**, and a paused
+   `StreamProvider` never subscribes. So `ref.read(someStreamProvider.future)`
+   from an unlistened path awaits a future nothing will ever complete — it hangs
+   silently rather than failing. This shipped once, in the sync engine, where it
+   meant launch and foreground syncs never ran at all while a manual "Sync now"
+   worked, because the settings screen happened to be watching. Hold a listener
+   across the await.
 3. Fixed schedules expand as floating wall-clock times and are resolved to an
    instant per occurrence against a stored IANA zone id; completions stored
    UTC. See ADR 0010.

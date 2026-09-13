@@ -92,7 +92,11 @@ tasks(
 )
 
 categories(id uuid pk, name text, color int, created_at, updated_at, deleted_at)
-task_categories(task_id uuid, category_id uuid, primary key(task_id, category_id))
+task_categories(                  -- a membership; see ADR 0011 on the absent FKs
+  id uuid pk, task_id uuid, category_id uuid,
+  created_at, updated_at, deleted_at,
+  unique(task_id, category_id)
+)
 
 completions(                      -- append-only, see ADR 0004
   id uuid pk, task_id uuid fk,

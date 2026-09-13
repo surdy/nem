@@ -146,6 +146,13 @@ Its schedule keeps running underneath, so a restored task returns overdue rather
 than pretending the gap did not happen.
 _Avoid_: delete, hide, disable, deactivate
 
+**Membership**:
+The association between one task and one category — the analogue of a binding,
+which associates a code with a target. A membership is a row in its own right
+rather than a composite key, because sync addresses every row by a single id and
+a membership has to be able to carry a tombstone.
+_Avoid_: link, assignment, tagging, join row
+
 **Reference photo**:
 An image attached to a task showing what the work involves. Never attached to a
 completion.

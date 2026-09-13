@@ -1,8 +1,10 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nem/src/data/binding_repository.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/target_repository.dart';
 import 'package:nem/src/data/task_repository.dart';
+import 'package:nem/src/domain/binding.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 
 /// The schema version 1 `tasks` table, exactly as drift created it before
@@ -39,6 +41,18 @@ const _v2Schema = [
   'CREATE INDEX idx_completions_task_id ON completions (task_id)',
   'CREATE INDEX idx_completions_deleted_at ON completions (deleted_at)',
   'PRAGMA user_version = 2',
+];
+
+/// What schema version 3 added on top of [_v2Schema] — targets. A device that
+/// took the targets build but not the scanning one has this on disk.
+const _v3Schema = [
+  ..._v2Schema,
+  'CREATE TABLE "targets" ("id" TEXT NOT NULL, "name" TEXT NOT NULL, '
+      '"description" TEXT NULL, "created_at" INTEGER NOT NULL, '
+      '"updated_at" INTEGER NOT NULL, "deleted_at" INTEGER NULL, '
+      'PRIMARY KEY ("id"))',
+  'CREATE INDEX idx_targets_deleted_at ON targets (deleted_at)',
+  'PRAGMA user_version = 3',
 ];
 
 /// Inserts the one task every migration test starts from.
@@ -98,7 +112,7 @@ void main() {
     expect(task.lastCompletedAt, isNull);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 3);
+    expect(version.data.values.single, 4);
 
     // And the new tables are usable, indexes and foreign key included.
     final completion = await repository.recordCompletion(
@@ -181,6 +195,91 @@ void main() {
     expect((await targets.allTargets()).single.id, target.id);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 3);
+    expect(version.data.values.single, 4);
+  });
+
+  test('upgrading from version 3 adds bindings and keeps the targets and '
+      'tasks that were already there', () async {
+    final startDate = DateTime(2026, 3, 1, 9);
+    final dueDate = DateTime(2026, 3, 31, 9);
+
+    final db = NemDatabase(
+      NativeDatabase.memory(
+        setup: (raw) {
+          for (final statement in _v3Schema) {
+            raw.execute(statement);
+          }
+          raw.execute(
+            'INSERT INTO targets (id, name, created_at, updated_at) '
+            'VALUES (?, ?, ?, ?)',
+            [
+              'target-1',
+              'The boiler',
+              _seconds(startDate),
+              _seconds(startDate),
+            ],
+          );
+          raw.execute(
+            'INSERT INTO tasks (id, title, target_id, schedule_mode, '
+            'interval_n, interval_unit, start_date, due_date, is_archived, '
+            'created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)',
+            [
+              'task-1',
+              'Bleed the radiators',
+              'target-1',
+              'floating',
+              30,
+              'day',
+              _seconds(startDate),
+              _seconds(dueDate),
+              _seconds(startDate),
+              _seconds(startDate),
+            ],
+          );
+        },
+      ),
+    );
+    addTearDown(db.close);
+
+    // Nothing on the tables that were already there moves: v4 only adds.
+    final task = (await TaskRepository(db).allTasks()).single;
+    expect(task.id, 'task-1');
+    expect(task.targetId, 'target-1');
+    expect((await TargetRepository(db).allTargets()).single.name, 'The boiler');
+
+    // And the new table is usable, unique index included.
+    final bindings = BindingRepository(db);
+    final label = await bindings.generateLabel('target-1');
+    expect(label.value, 'target-1');
+    expect(
+      (await bindings.findBinding(BindingKind.label, 'target-1'))?.id,
+      label.id,
+    );
+
+    final version = await db.customSelect('PRAGMA user_version').getSingle();
+    expect(version.data.values.single, 4);
+
+    final indexes = await db
+        .customSelect(
+          "SELECT name, sql FROM sqlite_master WHERE type = 'index' "
+          "AND tbl_name = 'bindings'",
+        )
+        .get();
+    expect(
+      indexes.map((row) => row.data['name']),
+      containsAll(<String>[
+        'idx_bindings_target_id',
+        'idx_bindings_deleted_at',
+        'idx_bindings_kind_value',
+      ]),
+    );
+    // The uniqueness PLAN.md asks for is the index, not a repository
+    // convention: a second row for the same (kind, value) is refused by SQLite.
+    expect(
+      indexes
+          .firstWhere((row) => row.data['name'] == 'idx_bindings_kind_value')
+          .data['sql'],
+      contains('UNIQUE'),
+    );
   });
 }

@@ -262,6 +262,12 @@ class FixedSchedule {
 /// The "last completed occurrence" is found by calendar day in the schedule's
 /// own zone, so completing a task on the day it was due counts as completing
 /// that occurrence whatever time of day the work happened.
+///
+/// ADR 0007 words the advance as "the first occurrence after today", which is
+/// the same thing whenever the work is recorded as it is done. A completion
+/// back-dated to last week advances to the occurrence after *that* day instead,
+/// which can still be in the past — the completion log is the truth and the due
+/// date follows it (ADR 0004), rather than the clock overriding what was said.
 DateTime? fixedDueDate(FixedSchedule schedule, {DateTime? lastCompletedAt}) {
   if (lastCompletedAt == null) {
     // Never completed: the first occurrence the rule produces at all, which for

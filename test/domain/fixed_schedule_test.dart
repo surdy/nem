@@ -491,6 +491,18 @@ void main() {
       },
     );
 
+    test('a back-dated completion can leave the task still overdue', () {
+      // ADR 0007 words the advance as "the first occurrence after today". That
+      // holds when the work is recorded as it is done; recorded for last week,
+      // the due date follows the log rather than the clock (ADR 0004).
+      final due = fixedDueDate(
+        schedule,
+        lastCompletedAt: DateTime.utc(2026, 1, 13, 18),
+      )!;
+      expect(date(due), '2026-01-20');
+      expect(dueStatusFor(due, DateTime(2026, 1, 22, 10)), DueStatus.overdue);
+    });
+
     test('doing the work late does not push the calendar out', () {
       // Unlike a floating schedule, where a late completion moves the next due
       // date out by a whole interval.

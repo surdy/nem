@@ -2,6 +2,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nem/src/app/clock.dart';
 import 'package:nem/src/app/providers.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/task_repository.dart';
@@ -231,6 +232,87 @@ void main() {
 
     await tester.pump(const Duration(seconds: 5));
     await tester.pumpAndSettle();
+    await unmount(tester);
+  });
+
+  testWidgets('regroups when the calendar day turns over with the app left '
+      'open', (tester) async {
+    // Due 15 June: today, at the moment the screen is opened.
+    await repository.createFloatingTask(
+      title: 'Water the plants',
+      intervalN: 14,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 1),
+    );
+
+    // The live clock rather than a pinned `now`, so this exercises the same
+    // boundary timer the running app has.
+    var clock = DateTime(2026, 6, 15, 23, 50);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          digestNotifierProvider.overrideWithValue(FakeDigestNotifier()),
+          clockProvider.overrideWithValue(() => clock),
+        ],
+        child: const MaterialApp(home: DueListScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('TODAY'), findsOneWidget);
+    expect(find.textContaining('late'), findsNothing);
+
+    // Midnight goes by with nobody touching the phone.
+    clock = DateTime(2026, 6, 16, 0, 10);
+    await tester.pump(const Duration(minutes: 20));
+    await tester.pumpAndSettle();
+
+    expect(find.text('OVERDUE'), findsOneWidget);
+    expect(find.text('TODAY'), findsNothing);
+    expect(find.text('1 day late'), findsOneWidget);
+
+    await unmount(tester);
+  });
+
+  testWidgets('the list does not rebuild on its own within a day', (
+    tester,
+  ) async {
+    await repository.createFloatingTask(
+      title: 'Water the plants',
+      intervalN: 14,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 1),
+    );
+
+    var clock = DateTime(2026, 6, 15, 9);
+    var groupings = 0;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          digestNotifierProvider.overrideWithValue(FakeDigestNotifier()),
+          clockProvider.overrideWithValue(() {
+            groupings++;
+            return clock;
+          }),
+        ],
+        child: const MaterialApp(home: DueListScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final atRest = groupings;
+    // Fourteen hours of the same day. A clock that ticked more often than the
+    // grouping can change would read itself hundreds of times here.
+    for (var hour = 10; hour < 24; hour++) {
+      clock = DateTime(2026, 6, 15, hour);
+      await tester.pump(const Duration(hours: 1));
+    }
+
+    expect(groupings, atRest);
+    expect(find.text('TODAY'), findsOneWidget);
+
     await unmount(tester);
   });
 }

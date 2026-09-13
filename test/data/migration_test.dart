@@ -80,7 +80,10 @@ void main() {
       now: DateTime(2026, 3, 5, 9),
     );
     expect(completion.deviceId, isNotEmpty);
-    expect((await repository.allTasks()).single.dueDate, DateTime(2026, 4, 4, 9));
+    expect(
+      (await repository.allTasks()).single.dueDate,
+      DateTime(2026, 4, 4, 9),
+    );
 
     final indexes = await db
         .customSelect(
@@ -90,8 +93,10 @@ void main() {
         .get();
     expect(
       indexes.map((row) => row.data['name']),
-      containsAll(<String>['idx_completions_task_id',
-        'idx_completions_deleted_at']),
+      containsAll(<String>[
+        'idx_completions_task_id',
+        'idx_completions_deleted_at',
+      ]),
     );
   });
 }

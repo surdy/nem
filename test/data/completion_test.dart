@@ -90,7 +90,10 @@ void main() {
     // The next one is measured from the completion, not from the due date it
     // replaced — 4 April rather than 30 April (CONTEXT.md — "Floating
     // schedule").
-    expect((await repository.allTasks()).single.dueDate, DateTime(2026, 4, 4, 9));
+    expect(
+      (await repository.allTasks()).single.dueDate,
+      DateTime(2026, 4, 4, 9),
+    );
   });
 
   test('undo tombstones the completion and restores the previous '
@@ -135,7 +138,10 @@ void main() {
       completedAt: DateTime(2026, 3, 5, 9),
       now: DateTime(2026, 3, 5, 9),
     );
-    expect((await repository.allTasks()).single.dueDate, DateTime(2026, 4, 4, 9));
+    expect(
+      (await repository.allTasks()).single.dueDate,
+      DateTime(2026, 4, 4, 9),
+    );
 
     await repository.undoCompletion(second, now: DateTime(2026, 3, 5, 9, 0, 3));
 

@@ -42,6 +42,15 @@ final dueListProvider = StreamProvider<List<Task>>(
   (ref) => ref.watch(taskRepositoryProvider).watchDueList(),
 );
 
+/// Every retired task, most recently archived first.
+///
+/// Deliberately a separate query rather than a filter over [dueListProvider]:
+/// the due list excludes archived tasks in SQL, and the archive is the other
+/// half of that same `where`.
+final archivedTasksProvider = StreamProvider<List<Task>>(
+  (ref) => ref.watch(taskRepositoryProvider).watchArchivedTasks(),
+);
+
 /// The due list grouped Overdue / Today / Soon.
 ///
 /// Reads the clock through [nowProvider] so the grouping can be pinned in

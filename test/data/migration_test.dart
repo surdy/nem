@@ -55,6 +55,21 @@ const _v3Schema = [
   'PRAGMA user_version = 3',
 ];
 
+/// What schema version 4 added on top of [_v3Schema] — bindings. A device that
+/// took the scanning build but not the snooze one has this on disk, and its
+/// `tasks` table has no snooze columns at all.
+const _v4Schema = [
+  ..._v3Schema,
+  'CREATE TABLE "bindings" ("id" TEXT NOT NULL, "target_id" TEXT NOT NULL, '
+      '"kind" TEXT NOT NULL, "value" TEXT NOT NULL, '
+      '"created_at" INTEGER NOT NULL, "updated_at" INTEGER NOT NULL, '
+      '"deleted_at" INTEGER NULL, PRIMARY KEY ("id"))',
+  'CREATE INDEX idx_bindings_target_id ON bindings (target_id)',
+  'CREATE INDEX idx_bindings_deleted_at ON bindings (deleted_at)',
+  'CREATE UNIQUE INDEX idx_bindings_kind_value ON bindings (kind, value)',
+  'PRAGMA user_version = 4',
+];
+
 /// Inserts the one task every migration test starts from.
 const _insertTask =
     'INSERT INTO tasks (id, title, schedule_mode, interval_n, '
@@ -112,7 +127,7 @@ void main() {
     expect(task.lastCompletedAt, isNull);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 4);
+    expect(version.data.values.single, 5);
 
     // And the new tables are usable, indexes and foreign key included.
     final completion = await repository.recordCompletion(
@@ -195,7 +210,7 @@ void main() {
     expect((await targets.allTargets()).single.id, target.id);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 4);
+    expect(version.data.values.single, 5);
   });
 
   test('upgrading from version 3 adds bindings and keeps the targets and '
@@ -257,7 +272,7 @@ void main() {
     );
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 4);
+    expect(version.data.values.single, 5);
 
     final indexes = await db
         .customSelect(
@@ -280,6 +295,85 @@ void main() {
           .firstWhere((row) => row.data['name'] == 'idx_bindings_kind_value')
           .data['sql'],
       contains('UNIQUE'),
+    );
+  });
+
+  test('upgrading from version 4 adds the snooze columns and leaves every '
+      'existing task unsnoozed', () async {
+    final startDate = DateTime(2026, 3, 1, 9);
+    final dueDate = DateTime(2026, 3, 31, 9);
+    final completedAt = DateTime(2026, 3, 5, 9);
+
+    final db = NemDatabase(
+      NativeDatabase.memory(
+        setup: (raw) {
+          for (final statement in _v4Schema) {
+            raw.execute(statement);
+          }
+          raw.execute(_insertTask, [
+            'task-1',
+            'Replace the water filter',
+            'floating',
+            30,
+            'day',
+            _seconds(startDate),
+            _seconds(dueDate),
+            _seconds(startDate),
+            _seconds(startDate),
+          ]);
+          raw.execute(
+            'INSERT INTO completions (id, task_id, completed_at, source, '
+            'device_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+            [
+              'completion-1',
+              'task-1',
+              _seconds(completedAt),
+              'manual',
+              'device-1',
+              _seconds(completedAt),
+            ],
+          );
+        },
+      ),
+    );
+    addTearDown(db.close);
+
+    final repository = TaskRepository(db);
+
+    // The upgrade only adds columns: the task, its completion and the due date
+    // derived from that completion are all exactly as they were.
+    final task = (await repository.allTasks()).single;
+    expect(task.id, 'task-1');
+    expect(task.lastCompletedAt, completedAt);
+    expect(task.snoozedUntil, isNull);
+    expect(task.snoozedAt, isNull);
+    expect(task.dueDate, DateTime(2026, 4, 4, 9));
+
+    final version = await db.customSelect('PRAGMA user_version').getSingle();
+    expect(version.data.values.single, 5);
+
+    // And the new columns are usable: a snooze written after the upgrade takes
+    // effect and survives a recomputation.
+    await repository.snoozeTask(
+      'task-1',
+      n: 3,
+      unit: IntervalUnit.day,
+      now: DateTime(2026, 4, 4, 9),
+    );
+    expect(
+      (await repository.allTasks()).single.dueDate,
+      DateTime(2026, 4, 7, 9),
+    );
+    expect(await repository.recomputeDerivedState(), 0);
+    expect(
+      (await repository.allTasks()).single.dueDate,
+      DateTime(2026, 4, 7, 9),
+    );
+
+    final columns = await db.customSelect("PRAGMA table_info('tasks')").get();
+    expect(
+      columns.map((row) => row.data['name']),
+      containsAll(<String>['snoozed_until', 'snoozed_at', 'is_archived']),
     );
   });
 }

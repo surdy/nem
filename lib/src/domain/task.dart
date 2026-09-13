@@ -1,6 +1,7 @@
 import 'due_status.dart';
 import 'fixed_schedule.dart';
 import 'schedule.dart';
+import 'snooze.dart';
 
 /// Which of the two schedule modes a task uses (ADR 0005).
 enum ScheduleMode { floating, fixed }
@@ -25,6 +26,8 @@ class Task {
     this.fixedSchedule,
     this.lastCompletedAt,
     this.reminderTime,
+    this.snoozedUntil,
+    this.snoozedAt,
     this.isArchived = false,
   });
 
@@ -63,20 +66,48 @@ class Task {
   final DateTime? lastCompletedAt;
 
   final String? reminderTime;
+
+  /// The date this task was pushed out to, when it has been snoozed.
+  ///
+  /// Stored, authoritative, and deliberately NOT derived — see [SnoozeOption]
+  /// for why a snooze cannot live in [dueDate].
+  final DateTime? snoozedUntil;
+
+  /// When the snooze in [snoozedUntil] was made.
+  ///
+  /// Kept so a later completion can supersede it without anything being
+  /// deleted, which is what makes undo restore the snooze (ADR 0004).
+  final DateTime? snoozedAt;
+
+  /// Retired: kept, with its completion history, but off the due list.
   final bool isArchived;
   final DateTime createdAt;
   final DateTime updatedAt;
 
   /// The moment this task next needs doing (CONTEXT.md — "Due date").
   ///
-  /// Derived on read from the schedule and the completion history, never stored
-  /// as truth (ADR 0004). The `tasks.due_date` column is only a sort key.
+  /// Derived on read from the schedule, the completion history and any snooze,
+  /// never stored as truth (ADR 0004). The `tasks.due_date` column is only a
+  /// sort key.
+  ///
+  /// A snooze is one of the inputs rather than an override written over the
+  /// top: it is stored where recomputation cannot reach it and folded in here,
+  /// so `recomputeDerivedState` reproduces this value instead of erasing it.
+  /// See [SnoozeOption].
+  DateTime? get dueDate => effectiveDueDate(
+    scheduled: scheduledDueDate,
+    snoozedUntil: snoozedUntil,
+    snoozedAt: snoozedAt,
+    lastCompletedAt: lastCompletedAt,
+  );
+
+  /// What the schedule alone says, before any snooze.
   ///
   /// The two modes compute it differently and cannot share a formula: floating
   /// measures forward from the last completion, fixed reads the calendar and
   /// pins to the earliest occurrence the last completion did not cover
   /// (ADR 0007). A fixed task's due date is therefore routinely in the past.
-  DateTime? get dueDate {
+  DateTime? get scheduledDueDate {
     switch (scheduleMode) {
       case ScheduleMode.floating:
         final schedule = floatingSchedule;
@@ -100,4 +131,14 @@ class Task {
     final due = dueDate;
     return due == null ? null : dueStatusFor(due, now);
   }
+
+  /// Whether a snooze is still holding this task off at [now] — what makes a
+  /// snoozed task visibly distinct from one that is merely upcoming.
+  bool isSnoozedAt(DateTime now) => snoozeHoldsAt(
+    now: now,
+    snoozedUntil: snoozedUntil,
+    snoozedAt: snoozedAt,
+    lastCompletedAt: lastCompletedAt,
+    scheduled: scheduledDueDate,
+  );
 }

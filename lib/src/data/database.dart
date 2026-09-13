@@ -58,6 +58,26 @@ class Tasks extends Table {
   /// Wall-clock "HH:mm"; per-task reminders arrive in P4.
   TextColumn get reminderTime => text().nullable()();
 
+  /// The date a snooze pushed this task out to, or null if it is not snoozed.
+  ///
+  /// **Not** a derived cache, and the one column on this table that a snooze
+  /// could not have lived in otherwise: [dueDate] is rewritten from the
+  /// schedule and the completion log by `recomputeDerivedState` on every launch
+  /// and after every sync pull (ADR 0004), so a snooze written there would be
+  /// erased within a launch. Stored here instead, where nothing derives it, it
+  /// is an *input* to that recomputation rather than a casualty of it — see
+  /// `domain/snooze.dart`.
+  DateTimeColumn get snoozedUntil => dateTime().nullable()();
+
+  /// When [snoozedUntil] was set.
+  ///
+  /// A completion recorded for later work supersedes the snooze, and this is
+  /// what that comparison is against. Nothing is cleared to make it happen, so
+  /// tombstoning that completion brings the snooze back (ADR 0004).
+  DateTimeColumn get snoozedAt => dateTime().nullable()();
+
+  /// Retired, but kept: an archived task is off the due list and out of the
+  /// digest, and its completion log is untouched.
   BoolColumn get isArchived => boolean().withDefault(const Constant(false))();
 
   DateTimeColumn get createdAt => dateTime()();
@@ -195,7 +215,7 @@ class NemDatabase extends _$NemDatabase {
     : super(executor ?? driftDatabase(name: 'nem'));
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -227,6 +247,14 @@ class NemDatabase extends _$NemDatabase {
         await m.create(idxBindingsTargetId);
         await m.create(idxBindingsDeletedAt);
         await m.create(idxBindingsKindValue);
+      }
+      // v5 adds the two snooze columns. Both are nullable with no default, so
+      // every existing task reads as "never snoozed" and nothing on disk is
+      // rewritten. `is_archived` has been declared since v1 and needs no
+      // migration — archive only starts using it.
+      if (from < 5) {
+        await m.addColumn(tasks, tasks.snoozedUntil);
+        await m.addColumn(tasks, tasks.snoozedAt);
       }
     },
     beforeOpen: (details) async {

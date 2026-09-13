@@ -5,6 +5,7 @@ import '../domain/completion.dart';
 import '../domain/fixed_schedule.dart';
 import '../domain/interval_unit.dart';
 import '../domain/schedule.dart';
+import '../domain/snooze.dart';
 import '../domain/task.dart';
 import 'database.dart';
 import 'ids.dart';
@@ -36,6 +37,29 @@ class TaskRepository {
       ..where(_db.tasks.deletedAt.isNull() & _db.tasks.isArchived.equals(false))
       ..orderBy([
         OrderingTerm(expression: _db.tasks.dueDate),
+        OrderingTerm(expression: _db.tasks.title),
+      ]);
+    return query.watch().map(
+      (rows) => [
+        for (final row in rows)
+          _toDomain(row.readTable(_db.tasks), row.read(lastCompletedAt)),
+      ],
+    );
+  }
+
+  /// Live archived tasks, most recently retired first.
+  ///
+  /// The complement of [watchDueList]: archiving takes a task off that list
+  /// without deleting anything, and this is where it can be found again and
+  /// restored. Ordered by `updated_at` because archiving is the last thing that
+  /// happened to these rows, so it puts what you just retired at the top.
+  Stream<List<Task>> watchArchivedTasks() {
+    final lastCompletedAt = _lastCompletedAtExpression();
+    final query = _db.select(_db.tasks).join([])
+      ..addColumns([lastCompletedAt])
+      ..where(_db.tasks.deletedAt.isNull() & _db.tasks.isArchived.equals(true))
+      ..orderBy([
+        OrderingTerm(expression: _db.tasks.updatedAt, mode: OrderingMode.desc),
         OrderingTerm(expression: _db.tasks.title),
       ]);
     return query.watch().map(
@@ -332,6 +356,101 @@ class TaskRepository {
       ]);
   }
 
+  /// Pushes a task out by [n] [unit]s without recording that it was done.
+  ///
+  /// Emphatically not a completion (ADR 0004): nothing is appended to the log,
+  /// because no work happened. What is written is the snooze itself — the date
+  /// and the moment it was chosen — into columns no recomputation derives, so
+  /// the next `recomputeDerivedState` folds the snooze back into `due_date`
+  /// rather than erasing it. See `domain/snooze.dart` for the whole argument.
+  ///
+  /// A fixed task's `rrule` is not touched, so its occurrences keep falling
+  /// where the calendar puts them (ADR 0007); the snooze sits on top of the one
+  /// the rule already produced.
+  ///
+  /// Unlike a completion, this *does* bump `updated_at`: a snooze is an edit of
+  /// the task and has to survive last-write-wins when sync arrives (PLAN.md),
+  /// where a derived cache does not.
+  ///
+  /// Returns the snoozed task, or null if there is no such live task.
+  Future<Task?> snoozeTask(
+    String taskId, {
+    required int n,
+    required IntervalUnit unit,
+    DateTime? now,
+  }) async {
+    final timestamp = now ?? DateTime.now();
+    final task = await _liveTask(taskId);
+    if (task == null) return null;
+
+    final snoozedUntil = snoozedUntilFrom(
+      now: timestamp,
+      dueDate: task.dueDate,
+      n: n,
+      unit: unit,
+    );
+    await (_db.update(_db.tasks)..where((t) => t.id.equals(taskId))).write(
+      TasksCompanion(
+        snoozedUntil: Value(snoozedUntil),
+        snoozedAt: Value(timestamp),
+        updatedAt: Value(timestamp),
+      ),
+    );
+    await _refreshDerivedState(taskId);
+    return _liveTask(taskId);
+  }
+
+  /// Takes a snooze back, so the task's due date is the schedule's again.
+  Future<void> cancelSnooze(String taskId, {DateTime? now}) async {
+    await (_db.update(_db.tasks)..where((t) => t.id.equals(taskId))).write(
+      TasksCompanion(
+        snoozedUntil: const Value(null),
+        snoozedAt: const Value(null),
+        updatedAt: Value(now ?? DateTime.now()),
+      ),
+    );
+    await _refreshDerivedState(taskId);
+  }
+
+  /// Retires a task: off the due list and out of the digest, everything else
+  /// intact.
+  ///
+  /// Nothing in the completion log is touched — archiving says you have stopped
+  /// doing this work, not that you never did it, and the history is the point
+  /// of keeping the row at all. The schedule keeps running underneath, so a
+  /// task restored after a year comes back overdue by a year rather than
+  /// pretending the gap did not happen; the derived caches never needed
+  /// touching because none of their inputs moved.
+  Future<void> archiveTask(String taskId, {DateTime? now}) =>
+      _setArchived(taskId, true, now);
+
+  /// Brings an archived task back onto the due list, with its history.
+  Future<void> restoreTask(String taskId, {DateTime? now}) =>
+      _setArchived(taskId, false, now);
+
+  Future<void> _setArchived(String taskId, bool isArchived, DateTime? now) =>
+      (_db.update(_db.tasks)..where((t) => t.id.equals(taskId))).write(
+        TasksCompanion(
+          isArchived: Value(isArchived),
+          updatedAt: Value(now ?? DateTime.now()),
+        ),
+      );
+
+  /// One task by id, with its last completion read out of the log.
+  Future<Task?> _liveTask(String taskId) async {
+    final lastCompletedAt = _lastCompletedAtExpression();
+    final row =
+        await (_db.select(_db.tasks).join([])
+              ..addColumns([lastCompletedAt])
+              ..where(
+                _db.tasks.id.equals(taskId) & _db.tasks.deletedAt.isNull(),
+              ))
+            .getSingleOrNull();
+    return row == null
+        ? null
+        : _toDomain(row.readTable(_db.tasks), row.read(lastCompletedAt));
+  }
+
   /// Recomputes the derived caches on every task from the completion log.
   ///
   /// PLAN.md requires this on app launch, after every sync pull, and on every
@@ -484,6 +603,8 @@ class TaskRepository {
       startDate: row.startDate,
       lastCompletedAt: lastCompletedAt,
       reminderTime: row.reminderTime,
+      snoozedUntil: row.snoozedUntil,
+      snoozedAt: row.snoozedAt,
       isArchived: row.isArchived,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,

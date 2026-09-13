@@ -315,4 +315,126 @@ void main() {
 
     await unmount(tester);
   });
+
+  testWidgets('a snoozed task is marked as snoozed rather than left looking '
+      'merely upcoming', (tester) async {
+    await repository.createFloatingTask(
+      title: 'Replace the water filter',
+      intervalN: 4,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 1),
+    );
+
+    await pumpDueList(tester);
+    expect(find.text('10 days late'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Snooze 3 days'));
+    await tester.pumpAndSettle();
+
+    // Out of Overdue and into Soon — but wearing the chip that says why.
+    expect(find.text('OVERDUE'), findsNothing);
+    expect(find.text('SOON'), findsOneWidget);
+    expect(find.text('Snoozed'), findsOneWidget);
+    expect(find.textContaining('late'), findsNothing);
+    expect(find.text('Due 18 Jun 2026'), findsNothing);
+    expect(find.textContaining('Due 18 Jun 2026'), findsOneWidget);
+
+    // And no completion was written for it.
+    final task = (await repository.allTasks()).single;
+    expect(task.lastCompletedAt, isNull);
+    expect(await repository.completionsFor(task.id), isEmpty);
+
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await unmount(tester);
+  });
+
+  testWidgets('a snooze can be taken back from the snackbar', (tester) async {
+    await repository.createFloatingTask(
+      title: 'Replace the water filter',
+      intervalN: 4,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 1),
+    );
+
+    await pumpDueList(tester);
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Snooze 3 days'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Snoozed Replace the water filter for 3 days'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+
+    // Back where it started, ten days late.
+    expect(find.text('10 days late'), findsOneWidget);
+    expect(find.text('Snoozed'), findsNothing);
+    await unmount(tester);
+  });
+
+  testWidgets('archiving takes a task off the list without touching its '
+      'completions', (tester) async {
+    final task = await repository.createFloatingTask(
+      title: 'Replace the water filter',
+      intervalN: 4,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 1),
+    );
+    await repository.recordCompletion(
+      task.id,
+      completedAt: DateTime(2026, 6, 2, 9),
+      now: DateTime(2026, 6, 2, 9),
+    );
+
+    await pumpDueList(tester);
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Archive'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Nothing due'), findsOneWidget);
+    expect(find.text('Archived Replace the water filter'), findsOneWidget);
+    expect((await repository.completionsFor(task.id)).length, 1);
+
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await unmount(tester);
+  });
+
+  testWidgets('the archive is reachable from here, and restores a task to '
+      'the list', (tester) async {
+    final task = await repository.createFloatingTask(
+      title: 'Replace the water filter',
+      intervalN: 4,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 1),
+    );
+    await repository.archiveTask(task.id);
+
+    await pumpDueList(tester);
+    expect(find.textContaining('Nothing due'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Archived'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Archived'), findsOneWidget);
+    expect(find.text('Replace the water filter'), findsOneWidget);
+
+    await tester.tap(find.text('Restore'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Nothing archived'), findsOneWidget);
+
+    // And it is back on the list underneath, still ten days late.
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('10 days late'), findsOneWidget);
+    await unmount(tester);
+  });
 }

@@ -43,6 +43,7 @@ class Completion {
     required this.source,
     required this.deviceId,
     required this.createdAt,
+    required this.updatedAt,
     this.note,
     this.deletedAt,
   });
@@ -63,6 +64,16 @@ class Completion {
 
   /// When the row was written, as opposed to when the work happened.
   final DateTime createdAt;
+
+  /// The clock sync measures this row on: [createdAt] until it is tombstoned,
+  /// the moment of the tombstone after.
+  ///
+  /// Not a second way to edit a completion (ADR 0004) — nothing but the
+  /// tombstone moves it. It exists so a correction made on one device reaches
+  /// the other: the pull cursor advances on this column, and `created_at`
+  /// alone would leave a tombstoned row sitting behind the far cursor forever.
+  /// See the column's own doc comment in `data/database.dart`.
+  final DateTime updatedAt;
 
   /// Set when this completion has been taken back. A tombstoned completion
   /// stops counting towards the derived state but is never deleted, so a

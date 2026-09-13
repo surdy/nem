@@ -1,5 +1,6 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nem/src/data/binding_repository.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/target_repository.dart';
 import 'package:nem/src/data/task_repository.dart';
@@ -124,8 +125,8 @@ void main() {
       expect(await outbox.count(), 1);
     });
 
-    test('recording a completion does not, because it does not change what '
-        'the task says', () async {
+    test('recording a completion queues the completion and not the '
+        'task', () async {
       final id = await createTask();
       await outbox.remove('tasks', id);
 
@@ -133,23 +134,126 @@ void main() {
         id,
         now: DateTime(2026, 6, 2, 9),
       );
-      // The completion itself is a row of its own and arrives in #12; what must
-      // not happen is the *task* being pushed, because `due_date` and
+      // The completion is a row of its own and syncs as one (#12). What must
+      // not happen is the *task* being pushed too: `due_date` and
       // `last_completed_at` are derived caches and the other device recomputes
-      // them from the log (ADR 0004).
-      expect(await outbox.count(), 0);
+      // them from its own copy of the log (ADR 0004).
+      expect(
+        [
+          for (final entry in await outbox.pending())
+            '${entry.table}/${entry.rowId}',
+        ],
+        ['completions/${completion.id}'],
+      );
 
+      // Taking it back queues the same row again — the tombstone is the only
+      // thing that ever moves on a completion, and it has to travel.
+      await outbox.remove('completions', completion.id);
       await tasks.undoCompletion(completion, now: DateTime(2026, 6, 2, 10));
-      expect(await outbox.count(), 0);
+      expect(
+        [
+          for (final entry in await outbox.pending())
+            '${entry.table}/${entry.rowId}',
+        ],
+        ['completions/${completion.id}'],
+      );
+    });
+
+    test('correcting a completion queues both the tombstone and its '
+        'replacement', () async {
+      final id = await createTask();
+      final original = await tasks.recordCompletion(
+        id,
+        completedAt: DateTime(2026, 6, 2, 9),
+        now: DateTime(2026, 6, 2, 9),
+      );
+      await outbox.remove('tasks', id);
+      await outbox.remove('completions', original.id);
+
+      // A correction is a tombstone plus a fresh row, never an edit (ADR 0004),
+      // so it is two rows to push and the far device has to see both.
+      final replacement = await tasks.correctCompletion(
+        original,
+        completedAt: DateTime(2026, 5, 31, 9),
+        now: DateTime(2026, 6, 3, 9),
+      );
+      expect(
+        {
+          for (final entry in await outbox.pending())
+            '${entry.table}/${entry.rowId}',
+        },
+        {'completions/${original.id}', 'completions/${replacement.id}'},
+      );
     });
 
     test('recomputing derived state does not', () async {
       final id = await createTask();
-      await tasks.recordCompletion(id, now: DateTime(2026, 6, 2, 9));
+      final completion = await tasks.recordCompletion(
+        id,
+        now: DateTime(2026, 6, 2, 9),
+      );
       await outbox.remove('tasks', id);
+      await outbox.remove('completions', completion.id);
 
       await tasks.recomputeDerivedState();
       expect(await outbox.count(), 0);
+    });
+
+    test('provisioning a code queues the binding', () async {
+      final targets = TargetRepository(db);
+      final bindings = BindingRepository(db);
+      final target = await targets.createTarget(
+        name: 'The boiler',
+        now: DateTime(2026, 6, 1, 9),
+      );
+      await outbox.remove('targets', target.id);
+
+      // A label printed here has to resolve on the other device (#12).
+      final label = await bindings.generateLabel(
+        target.id,
+        now: DateTime(2026, 6, 2, 9),
+      );
+      expect(
+        [
+          for (final entry in await outbox.pending())
+            '${entry.table}/${entry.rowId}',
+        ],
+        ['bindings/${label.id}'],
+      );
+
+      // And unbinding it queues the same row, carrying the tombstone.
+      await outbox.remove('bindings', label.id);
+      await bindings.unbind(label.id, now: DateTime(2026, 6, 3, 9));
+      expect(
+        [
+          for (final entry in await outbox.pending())
+            '${entry.table}/${entry.rowId}',
+        ],
+        ['bindings/${label.id}'],
+      );
+    });
+
+    test('creating and renaming a target queues it', () async {
+      final targets = TargetRepository(db);
+      final target = await targets.createTarget(
+        name: 'The boiler',
+        now: DateTime(2026, 6, 1, 9),
+      );
+      expect(
+        [
+          for (final entry in await outbox.pending())
+            '${entry.table}/${entry.rowId}',
+        ],
+        ['targets/${target.id}'],
+      );
+
+      await outbox.remove('targets', target.id);
+      await targets.updateTarget(
+        id: target.id,
+        name: 'The boiler cupboard',
+        now: DateTime(2026, 6, 2, 9),
+      );
+      expect(await outbox.count(), 1);
     });
 
     test('deleting a target queues the tasks it unassigns', () async {
@@ -170,9 +274,13 @@ void main() {
       // The unassignment bumps the task's `updated_at`, so unless the task is
       // pushed the other device keeps showing the work at a target that is
       // gone — and the next pull would hand the stale reference straight back.
+      // The target's own tombstone goes up alongside it.
       expect(
-        [for (final entry in await outbox.pending()) entry.rowId],
-        [task.id],
+        {
+          for (final entry in await outbox.pending())
+            '${entry.table}/${entry.rowId}',
+        },
+        {'tasks/${task.id}', 'targets/${target.id}'},
       );
     });
   });

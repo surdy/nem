@@ -32,7 +32,9 @@ void main() {
   });
 
   test('the clock column is whatever the table names', () {
-    // #12 registers completions on `created_at`; the filter has to follow.
+    // Every registered table names `updated_at` today, but the column is a
+    // property of the table (`SyncedTable.clockColumn`) and the filter has to
+    // follow whatever it says.
     expect(
       postgrestPrecedenceFilter(clockColumn: 'created_at', row: row()),
       contains('created_at.lt.'),

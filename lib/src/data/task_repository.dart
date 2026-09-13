@@ -312,6 +312,7 @@ class TaskRepository {
       note: (trimmed == null || trimmed.isEmpty) ? null : trimmed,
       deviceId: await deviceId(),
       createdAt: timestamp,
+      updatedAt: timestamp,
     );
 
     await _db
@@ -325,8 +326,18 @@ class TaskRepository {
             note: Value(completion.note),
             deviceId: completion.deviceId,
             createdAt: completion.createdAt,
+            updatedAt: completion.updatedAt,
           ),
         );
+    // The completion is a row of its own and syncs as one (#12). The *task* is
+    // deliberately not queued alongside it: what the completion moves on the
+    // task is `due_date` and `last_completed_at`, and those are derived caches
+    // the far device recomputes from its own copy of the log (ADR 0004).
+    await _outbox.enqueue(
+      _db.completions.actualTableName,
+      completion.id,
+      now: timestamp,
+    );
 
     await _refreshDerivedState(taskId);
     return completion;
@@ -623,10 +634,24 @@ class TaskRepository {
     );
   }
 
+  /// Marks a completion as taken back, and queues the tombstone for push.
+  ///
+  /// `updated_at` moves with `deleted_at` and only ever with it. That is what
+  /// carries the tombstone to the other device: the pull cursor advances on
+  /// `updated_at`, so a row whose only change was `deleted_at` would otherwise
+  /// stay behind the far cursor forever and the correction would never arrive
+  /// (see the column's doc comment in `database.dart`).
   Future<void> _tombstone(String completionId, DateTime now) async {
-    await (_db.update(_db.completions)
-          ..where((c) => c.id.equals(completionId) & c.deletedAt.isNull()))
-        .write(CompletionsCompanion(deletedAt: Value(now)));
+    await (_db.update(
+      _db.completions,
+    )..where((c) => c.id.equals(completionId) & c.deletedAt.isNull())).write(
+      CompletionsCompanion(deletedAt: Value(now), updatedAt: Value(now)),
+    );
+    await _outbox.enqueue(
+      _db.completions.actualTableName,
+      completionId,
+      now: now,
+    );
   }
 
   /// [lastCompletedAt] is passed in rather than read from [row] because the
@@ -700,6 +725,7 @@ class TaskRepository {
     note: row.note,
     deviceId: row.deviceId,
     createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
   );
 }

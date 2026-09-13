@@ -5,6 +5,7 @@ import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/target_repository.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/binding.dart';
+import 'package:nem/src/domain/completion.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/sync/outbox_store.dart';
 
@@ -81,6 +82,20 @@ const _v5Schema = [
   'PRAGMA user_version = 5',
 ];
 
+/// What schema version 6 added on top of [_v5Schema] — the outbox (#11). A
+/// device that took the task-sync build but not this one has this on disk: an
+/// outbox, and a `completions` table that still carries the foreign key on
+/// `task_id` and has no `updated_at`.
+const _v6Schema = [
+  ..._v5Schema,
+  'CREATE TABLE "outbox" ("table_name" TEXT NOT NULL, "row_id" TEXT NOT NULL, '
+      '"enqueued_at" INTEGER NOT NULL, '
+      '"attempts" INTEGER NOT NULL DEFAULT 0, "last_error" TEXT NULL, '
+      'PRIMARY KEY ("table_name", "row_id"))',
+  'CREATE INDEX idx_outbox_enqueued_at ON outbox (enqueued_at)',
+  'PRAGMA user_version = 6',
+];
+
 /// Inserts the one task every migration test starts from.
 const _insertTask =
     'INSERT INTO tasks (id, title, schedule_mode, interval_n, '
@@ -138,9 +153,9 @@ void main() {
     expect(task.lastCompletedAt, isNull);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 6);
+    expect(version.data.values.single, 7);
 
-    // And the new tables are usable, indexes and foreign key included.
+    // And the new tables are usable, indexes included.
     final completion = await repository.recordCompletion(
       'task-1',
       completedAt: DateTime(2026, 3, 5, 9),
@@ -221,7 +236,7 @@ void main() {
     expect((await targets.allTargets()).single.id, target.id);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 6);
+    expect(version.data.values.single, 7);
   });
 
   test('upgrading from version 3 adds bindings and keeps the targets and '
@@ -283,7 +298,7 @@ void main() {
     );
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 6);
+    expect(version.data.values.single, 7);
 
     final indexes = await db
         .customSelect(
@@ -361,7 +376,7 @@ void main() {
     expect(task.dueDate, DateTime(2026, 4, 4, 9));
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 6);
+    expect(version.data.values.single, 7);
 
     // And the new columns are usable: a snooze written after the upgrade takes
     // effect and survives a recomputation.
@@ -439,7 +454,7 @@ void main() {
     expect(task.dueDate, DateTime(2026, 4, 4, 9));
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 6);
+    expect(version.data.values.single, 7);
 
     // Nothing is queued by the upgrade itself. A device upgrading into this
     // build has no backend configured, and what it already holds is queued by
@@ -469,6 +484,128 @@ void main() {
     expect(
       indexes.map((row) => row.data['name']),
       contains('idx_outbox_enqueued_at'),
+    );
+  });
+  test('upgrading from version 6 drops the foreign key on completions and '
+      'backfills their updated_at', () async {
+    final startDate = DateTime(2026, 3, 1, 9);
+    final dueDate = DateTime(2026, 3, 31, 9);
+    final completedAt = DateTime(2026, 3, 5, 9);
+    final tombstonedAt = DateTime(2026, 3, 6, 11);
+
+    final db = NemDatabase(
+      NativeDatabase.memory(
+        setup: (raw) {
+          for (final statement in _v6Schema) {
+            raw.execute(statement);
+          }
+          raw.execute(_insertTask, [
+            'task-1',
+            'Replace the water filter',
+            'floating',
+            30,
+            'day',
+            _seconds(startDate),
+            _seconds(dueDate),
+            _seconds(startDate),
+            _seconds(startDate),
+          ]);
+          // One completion that stands and one that was taken back, because
+          // the backfill treats them differently.
+          raw.execute(
+            'INSERT INTO completions (id, task_id, completed_at, source, '
+            'device_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+            [
+              'completion-1',
+              'task-1',
+              _seconds(completedAt),
+              'manual',
+              'device-1',
+              _seconds(completedAt),
+            ],
+          );
+          raw.execute(
+            'INSERT INTO completions (id, task_id, completed_at, source, '
+            'device_id, created_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [
+              'completion-2',
+              'task-1',
+              _seconds(DateTime(2026, 3, 6, 9)),
+              'manual',
+              'device-1',
+              _seconds(DateTime(2026, 3, 6, 9)),
+              _seconds(tombstonedAt),
+            ],
+          );
+        },
+      ),
+    );
+    addTearDown(db.close);
+
+    final repository = TaskRepository(db);
+
+    // Every row is copied, not recreated: the log is the only truth there is
+    // (ADR 0004) and a table rewrite is exactly where it could have been lost.
+    final task = (await repository.allTasks()).single;
+    expect(task.id, 'task-1');
+    expect(task.lastCompletedAt, completedAt);
+    expect(task.dueDate, DateTime(2026, 4, 4, 9));
+
+    final version = await db.customSelect('PRAGMA user_version').getSingle();
+    expect(version.data.values.single, 7);
+
+    // The constraint is gone. SQLite cannot drop one in place, so this is the
+    // `TableMigration` doing its job rather than an `ALTER TABLE` that never
+    // could have (ADR 0011).
+    final keys = await db
+        .customSelect("PRAGMA foreign_key_list('completions')")
+        .get();
+    expect(keys, isEmpty);
+
+    // The log came across whole: two rows, one of them tombstoned, so one
+    // completion stands.
+    expect(await repository.completionsFor('task-1'), hasLength(1));
+
+    // And the pull this was all for now works: a completion whose task has not
+    // arrived yet is inserted rather than refused. `PRAGMA foreign_keys` is on
+    // — `beforeOpen` sets it on every open — so before this migration the
+    // insert below failed outright and the completion was lost.
+    final foreignKeys = await db
+        .customSelect('PRAGMA foreign_keys')
+        .getSingle();
+    expect(foreignKeys.data.values.single, 1);
+    final arrived = await repository.recordCompletion(
+      'a-task-from-the-other-phone',
+      completedAt: DateTime(2026, 3, 7, 9),
+      now: DateTime(2026, 3, 7, 9),
+    );
+    expect(await repository.completionsFor('a-task-from-the-other-phone'), [
+      isA<Completion>().having((c) => c.id, 'id', arrived.id),
+    ]);
+
+    // `updated_at` is what the column would have held had it always existed:
+    // the tombstone's moment for the completion that was taken back, and
+    // `created_at` for the one that stands.
+    final rows = await db.select(db.completions).get();
+    final byId = {for (final row in rows) row.id: row};
+    expect(byId['completion-1']!.updatedAt, completedAt);
+    expect(byId['completion-1']!.deletedAt, isNull);
+    expect(byId['completion-2']!.updatedAt, tombstonedAt);
+    expect(byId['completion-2']!.deletedAt, tombstonedAt);
+
+    // The indexes come back with the table.
+    final indexes = await db
+        .customSelect(
+          "SELECT name FROM sqlite_master WHERE type = 'index' "
+          "AND tbl_name = 'completions'",
+        )
+        .get();
+    expect(
+      indexes.map((row) => row.data['name']),
+      containsAll(<String>[
+        'idx_completions_task_id',
+        'idx_completions_deleted_at',
+      ]),
     );
   });
 }

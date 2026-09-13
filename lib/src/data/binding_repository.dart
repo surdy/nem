@@ -4,6 +4,7 @@ import '../domain/binding.dart';
 import '../domain/scan.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
+import '../sync/outbox_store.dart';
 import 'database.dart';
 import 'ids.dart';
 import 'target_repository.dart';
@@ -57,6 +58,13 @@ class BindingRepository {
   BindingRepository(this._db);
 
   final NemDatabase _db;
+
+  /// Provisioning a code is a change the other device has to see — a label
+  /// printed here has to resolve there (#12) — so every write below queues the
+  /// binding row for push. `(kind, value)` is unique including tombstones, so
+  /// what is pushed is always the same row re-pointed rather than a second one
+  /// the far device would have to choose between.
+  late final OutboxStore _outbox = OutboxStore(_db);
 
   /// The codes bound to one target, oldest first.
   Stream<List<Binding>> watchBindingsForTarget(String targetId) {
@@ -123,6 +131,11 @@ class BindingRepository {
             updatedAt: Value(timestamp),
           ),
         );
+        await _outbox.enqueue(
+          _db.bindings.actualTableName,
+          existing.id,
+          now: timestamp,
+        );
         return Binding(
           id: existing.id,
           targetId: targetId,
@@ -153,6 +166,11 @@ class BindingRepository {
               updatedAt: timestamp,
             ),
           );
+      await _outbox.enqueue(
+        _db.bindings.actualTableName,
+        binding.id,
+        now: timestamp,
+      );
       return binding;
     });
   }
@@ -229,6 +247,7 @@ class BindingRepository {
         updatedAt: Value(timestamp),
       ),
     );
+    await _outbox.enqueue(_db.bindings.actualTableName, id, now: timestamp);
   }
 
   Binding _toDomain(BindingRow row) => Binding(

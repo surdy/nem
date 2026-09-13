@@ -109,7 +109,17 @@ class Tasks extends Table {
 class Completions extends Table {
   TextColumn get id => text()();
 
-  TextColumn get taskId => text().references(Tasks, #id)();
+  /// The task this completion records work against.
+  ///
+  /// No SQLite foreign key, and this is the column ADR 0011 argues hardest
+  /// about. A pull delivers rows per table in no guaranteed order, so a
+  /// completion can legitimately arrive before the task it belongs to — and a
+  /// `REFERENCES` constraint, with `PRAGMA foreign_keys = ON`, would refuse the
+  /// insert outright. Completions are the one thing nem cannot afford to lose
+  /// (ADR 0004: every due date is derived from them and can be reconstructed
+  /// from nothing else), so the constraint had to go. A `task_id` that resolves
+  /// to nothing is an orphan the application ignores, not corruption.
+  TextColumn get taskId => text()();
 
   /// When the work was done, which is not necessarily when the row was written.
   DateTimeColumn get completedAt => dateTime()();
@@ -124,6 +134,32 @@ class Completions extends Table {
   TextColumn get deviceId => text()();
 
   DateTimeColumn get createdAt => dateTime()();
+
+  /// The clock sync measures this row on — equal to [createdAt] until the row
+  /// is tombstoned, and moved to the moment of the tombstone when it is.
+  ///
+  /// A completion is an immutable event and this is not a second way to edit
+  /// one (ADR 0004): nothing in nem writes it except the tombstone, so for a
+  /// completion that stands it is `created_at` and nothing else.
+  ///
+  /// It exists because `SyncedTable.clockColumn` is both the pull cursor and
+  /// the last-write-wins comparison, and a cursor on `created_at` would never
+  /// carry a tombstone: taking a completion back on one device moves
+  /// `deleted_at` and leaves `created_at` where it was, so the row would sit
+  /// behind the other device's cursor forever and the correction would never
+  /// arrive. The alternative — a cursor reading the later of `created_at` and
+  /// `deleted_at` — needs an expression where PostgREST wants a column: the
+  /// pull filters, orders and pages on it, and the conditional `PATCH` compares
+  /// against it, so it would mean a generated column in Postgres, which the
+  /// codec would then try to write on every insert because it derives the wire
+  /// shape from drift's columns. A real column on both sides is the cheaper
+  /// half of that choice.
+  ///
+  /// Append-and-merge is untouched by it (ADR 0004). Two devices' copies of one
+  /// completion carry the same `updated_at`, so neither supersedes the other
+  /// and both keep what they already have; a tombstone wins by being a
+  /// tombstone, not by its clock.
+  DateTimeColumn get updatedAt => dateTime()();
 
   /// Tombstones a correction (PLAN.md). A tombstoned completion no longer
   /// counts towards a task's derived state.
@@ -235,9 +271,9 @@ class SyncState extends Table {
 @DataClassName('OutboxRow')
 @TableIndex(name: 'idx_outbox_enqueued_at', columns: {#enqueuedAt})
 class Outbox extends Table {
-  /// The SQL name of the table the row lives in — `tasks`, and from #12 the
-  /// rest. Named explicitly because drift's `Table` already owns the
-  /// `tableName` getter.
+  /// The SQL name of the table the row lives in — one of the four in
+  /// `defaultSyncedTables`. Named explicitly because drift's `Table` already
+  /// owns the `tableName` getter.
   TextColumn get pendingTable => text().named('table_name')();
 
   TextColumn get rowId => text()();
@@ -263,7 +299,7 @@ class NemDatabase extends _$NemDatabase {
     : super(executor ?? driftDatabase(name: 'nem'));
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -315,6 +351,34 @@ class NemDatabase extends _$NemDatabase {
       if (from < 6) {
         await m.createTable(outbox);
         await m.create(idxOutboxEnqueuedAt);
+      }
+      // v7 puts `completions` into sync (#12), which takes two changes to the
+      // one table and so is one `TableMigration` rather than two steps.
+      //
+      // The first is the foreign key on `task_id`, which has to go: a pull can
+      // deliver a completion before the task it belongs to, and the constraint
+      // would refuse the insert with `PRAGMA foreign_keys = ON` (ADR 0011).
+      // SQLite cannot drop a constraint in place, so the table is recreated in
+      // the shape the Dart class now describes and every row is copied into it.
+      //
+      // The second rides along free, because the rows are being rewritten
+      // anyway: `updated_at`, which is the column sync's cursor reads. Existing
+      // rows take the later of what they have — the tombstone's moment for a
+      // completion that was taken back, and `created_at` for one that stands —
+      // which is exactly what the column would have held had it always existed.
+      if (from < 7) {
+        await m.alterTable(
+          TableMigration(
+            completions,
+            newColumns: [completions.updatedAt],
+            columnTransformer: {
+              completions.updatedAt: coalesce([
+                completions.deletedAt,
+                completions.createdAt,
+              ]),
+            },
+          ),
+        );
       }
     },
     beforeOpen: (details) async {

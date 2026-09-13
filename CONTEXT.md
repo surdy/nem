@@ -74,6 +74,12 @@ A pre-existing product code (EAN, UPC, Code 128) that nem binds but did not
 create.
 _Avoid_: product tag, UPC as a generic term
 
+**Reader**:
+The hardware a scan came in through — the camera or NFC. A different axis from
+the carrier: the camera reads both labels and barcodes, so the reader narrows
+what the carrier can be without deciding it.
+_Avoid_: scanner, input, source, carrier (they are not the same thing)
+
 **Carrier**:
 Which of the three kinds of code a value was read off — a tag, a label, or a
 barcode. The same `nem://t/<uuid>` is byte-identical on a tag and a printed
@@ -95,6 +101,17 @@ _Avoid_: pairing, registering, enrolling, setup
 **Category**:
 A user-defined grouping that cuts across targets — kitchen, car, admin.
 _Avoid_: tag, label, group, folder
+
+**Snooze**:
+Pushing a task's due date forward without recording that the work was done.
+Writes no completion — you did not do it, you decided not to do it yet.
+_Avoid_: postpone, defer, skip, dismiss
+
+**Archive**:
+Retiring a task so it leaves the due list while keeping its completion history.
+Its schedule keeps running underneath, so a restored task returns overdue rather
+than pretending the gap did not happen.
+_Avoid_: delete, hide, disable, deactivate
 
 **Reference photo**:
 An image attached to a task showing what the work involves. Never attached to a

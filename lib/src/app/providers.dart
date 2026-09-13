@@ -15,6 +15,7 @@ import '../notifications/digest_notifier.dart';
 import '../notifications/digest_scheduler.dart';
 import '../notifications/local_digest_notifier.dart';
 import 'app.dart';
+import 'clock.dart';
 
 /// Manual providers throughout — Riverpod 3 recommends `@riverpod` codegen only
 /// where build_runner is already earning its keep elsewhere (PLAN.md,
@@ -103,7 +104,19 @@ final taskHistoryProvider = Provider.family<AsyncValue<TaskHistory>, String>((
 });
 
 /// The current moment, overridable in tests.
-final nowProvider = Provider<DateTime>((ref) => DateTime.now());
+///
+/// Live rather than frozen: it is recomputed every time [currentDayProvider]
+/// moves, which is once per calendar day boundary and once per foreground.
+/// Everything downstream — the due list's grouping, the lateness badges, the
+/// trailing windows in [taskHistoryProvider] — is counted in calendar days, so
+/// the day is the only granularity at which any of it can change, and a
+/// finer-grained clock would rebuild the list for nothing.
+///
+/// Still overridable with a plain value, which is how every test pins it.
+final nowProvider = Provider<DateTime>((ref) {
+  ref.watch(currentDayProvider);
+  return ref.watch(clockProvider)();
+});
 
 /// The IANA zone id a newly authored fixed schedule is anchored in (ADR 0010).
 ///

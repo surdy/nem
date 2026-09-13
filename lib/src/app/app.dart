@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../ui/home_shell.dart';
+import 'clock.dart';
 import 'providers.dart';
 
 /// Lets a digest tap reach the navigator from outside the widget tree.
@@ -28,13 +29,26 @@ class _NemAppState extends ConsumerState<NemApp> {
   @override
   void initState() {
     super.initState();
-    // Re-tops the rolling window on every foreground. Days fall off the front
-    // of it as they fire, completions change what the remaining days should
-    // say, and nothing in the OS can recompute either — so the window is
-    // rebuilt from the tasks as they now stand.
-    _lifecycle = AppLifecycleListener(
-      onResume: () => ref.read(digestSchedulerProvider).refresh(),
-    );
+    _lifecycle = AppLifecycleListener(onResume: _onResume);
+  }
+
+  /// Everything that has to catch up with the world after nem was away.
+  ///
+  /// One listener rather than two, because both halves are the same idea: time
+  /// passed while the process was suspended and nothing in it noticed.
+  void _onResume() {
+    // Re-tops the rolling window. Days fall off the front of it as they fire,
+    // completions change what the remaining days should say, and nothing in the
+    // OS can recompute either — so the window is rebuilt from the tasks as they
+    // now stand.
+    ref.read(digestSchedulerProvider).refresh();
+
+    // Re-reads the calendar day. The boundary timer that normally moves it does
+    // not fire in a suspended process, so an app backgrounded on Monday and
+    // reopened on Wednesday would otherwise still be grouping against Monday.
+    // Also re-arms that timer, which is what picks up a timezone changed in the
+    // system settings — leaving nem to change it is what got us here.
+    ref.read(currentDayProvider.notifier).sync();
   }
 
   @override

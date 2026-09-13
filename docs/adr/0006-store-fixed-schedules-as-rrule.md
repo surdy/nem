@@ -5,10 +5,13 @@ package, while the editor deliberately exposes only the subset Google Calendar
 exposes — frequency, interval, weekday picker, day-of-month versus nth-weekday,
 and an end condition. Storage is therefore strictly more expressive than the UI.
 
-The standard gives us correct handling of leap years, month ends and DST for
-free, and leaves a calendar-export path open; the rejected alternative — plain
-interval, weekday-set and day-of-month columns — would have meant writing and
-testing that date arithmetic ourselves.
+The standard gives us correct handling of leap years and month ends, and leaves
+a calendar-export path open; the rejected alternative — plain interval,
+weekday-set and day-of-month columns — would have meant writing and testing that
+calendar arithmetic ourselves.
+
+It does **not** give us DST for free. The `rrule` package is UTC-only by explicit
+design and refuses non-UTC input; see ADR 0010 for how local time is handled.
 
 ## Consequences
 

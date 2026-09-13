@@ -21,6 +21,7 @@ Flutter, iOS + Android, one person on two devices.
 | [0007](./docs/adr/0007-missed-occurrences-collapse.md) | Missed occurrences collapse; due date pins to the earliest missed |
 | [0008](./docs/adr/0008-a-tag-identifies-a-target-not-a-task.md) | A tag identifies a target, not a task |
 | [0009](./docs/adr/0009-custom-uri-scheme-forgoing-ios-background-scanning.md) | Custom URI scheme on tags, forgoing iOS background scanning |
+| [0010](./docs/adr/0010-recurrence-expands-in-floating-wall-clock-time.md) | Recurrence expands in floating wall-clock time, resolved per occurrence |
 
 Settled without an ADR, because each is either obvious or cheap to reverse:
 Flutter as the stack, iOS + Android as targets, the daily digest plus per-task
@@ -43,6 +44,17 @@ could invalidate them. They are caches (ADR 0004), never authoritative.
 
 States: `overdue` (due date in the past, badge shows the day count),
 `due_today`, `upcoming`.
+
+State is decided by comparing **whole calendar days**, not instants. A task due
+at 09:00 today stays `due_today` for the whole day rather than flipping to
+`overdue` at 09:01.
+
+`interval_unit` is one of `day`, `week`, `month`, `year`. Monthly and yearly
+intervals use calendar arithmetic rather than fixed durations, so they keep their
+day of the month, clamp in short months, and are unaffected by DST.
+
+`Soon` is unbounded — every upcoming task appears. Revisit if the list ever gets
+long enough to need a horizon.
 
 ---
 
@@ -185,11 +197,17 @@ upload queue, per-task reminder times, history and streaks, snooze, archive.
 Not yet challenged. Flag any and I'll change it before P1.
 
 1. Auth is email magic link — no password, no anonymous-plus-device-code flow.
-2. State management is Riverpod.
-3. Fixed schedules expand in device-local time; completions stored UTC.
-4. The iOS 64-pending-notification cap is handled by a rolling window: one
-   repeating digest plus per-task reminders for ~30 days, re-topped on
-   foreground.
+2. State management is Riverpod 3, using manual providers rather than
+   `@riverpod` codegen — Riverpod 3 reversed its own guidance and now
+   recommends codegen only when build_runner is already in play.
+3. Fixed schedules expand as floating wall-clock times and are resolved to an
+   instant per occurrence against a stored IANA zone id; completions stored
+   UTC. See ADR 0010.
+4. The iOS 64-pending-notification cap is handled by a rolling window, re-topped
+   on foreground and verified against `pendingNotificationRequests().length`.
+   Where a schedule maps onto `matchDateTimeComponents` (a plain weekly or
+   monthly time), one OS-level repeating notification is used instead of
+   expanding the rule into many — one slot rather than fifty-two.
 5. Blank tags are NTAG215/216.
 6. No widget, no watch app, no Siri or Assistant integration in any phase.
 
@@ -206,4 +224,8 @@ Not yet challenged. Flag any and I'll change it before P1.
 | `qr_flutter` | label rendering |
 | `flutter_local_notifications` + `timezone` | digest and reminders |
 | `supabase_flutter` | auth, Postgres, realtime, storage |
-| `flutter_riverpod` | state management |
+| `flutter_riverpod` | state management (manual providers, not codegen) |
+
+`build_runner` is pinned to `^2.15.1`, not the current `^2.16.1`: from 2.15.2 it
+requires `meta ^1.18.3`, while `flutter_test` on Flutter 3.44.8 pins `meta` to
+exactly 1.18.0. Revisit when the Flutter SDK moves.

@@ -115,7 +115,7 @@ class SyncStatusStore extends Notifier<SyncStatus> {
       state = const SyncStatus();
       return;
     }
-    final account = await ref.read(syncAccountProvider.future);
+    final account = await _account();
     if (account == null) {
       // Configured but not signed in: a URL has been typed in and the magic
       // link has not come back yet.
@@ -123,6 +123,33 @@ class SyncStatusStore extends Notifier<SyncStatus> {
       return;
     }
     await ref.read(syncRunnerProvider).syncNow(account: account);
+  }
+
+  /// The signed-in email, waited for with the provider held open.
+  ///
+  /// The subscription is the whole point and not a formality. Riverpod 3 pauses
+  /// a provider that nothing is listening to, and a paused [StreamProvider]
+  /// never subscribes to its stream — so a bare
+  /// `ref.read(syncAccountProvider.future)` returns a future that is never
+  /// completed by anything, and the sync that awaited it stops there for good.
+  /// `ref.read` creates no listener, and neither does reaching this notifier
+  /// through `ref.read(syncStatusProvider.notifier)`, which is how every caller
+  /// gets here.
+  ///
+  /// It only ever resolved at all because the settings screen watches the same
+  /// provider: with **Settings → Sync** on screen the account is live and the
+  /// Sync now button works, and with the due list on screen — launch,
+  /// foreground, a realtime nudge (#13) — the identical call waited forever and
+  /// said nothing, because a sync that never returns publishes no failure.
+  ///
+  /// A listener held across the await is what makes the stream run. Closed in a
+  /// `finally` so this leaves nothing subscribed: the account is wanted for the
+  /// length of one sync, not for the length of the process.
+  Future<String?> _account() {
+    final subscription = ref.listen(syncAccountProvider, (_, _) {});
+    return ref
+        .read(syncAccountProvider.future)
+        .whenComplete(subscription.close);
   }
 }
 

@@ -6,6 +6,7 @@ import '../domain/due_list.dart';
 import '../domain/due_status.dart';
 import '../domain/task.dart';
 import 'create_task_screen.dart';
+import 'scan_screen.dart';
 import 'settings_screen.dart';
 import 'task_detail_screen.dart';
 
@@ -21,6 +22,13 @@ class DueListScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Due'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.qr_code_scanner),
+            tooltip: 'Scan',
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute<void>(builder: (_) => const ScanScreen())),
+          ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: 'Settings',

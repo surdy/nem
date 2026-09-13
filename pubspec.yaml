@@ -25,6 +25,21 @@ dependencies:
   # The only way to learn the device's IANA zone id; `timezone` ships the
   # database but cannot say which zone the device is in.
   flutter_timezone: ^5.1.0
+  # Camera capture for QR labels and, later, product barcodes. Declares the
+  # Android CAMERA permission itself; iOS needs NSCameraUsageDescription, which
+  # is in Runner/Info.plist.
+  mobile_scanner: ^7.4.1
+  # Label rendering, and the PNG export behind "Export for printing".
+  #
+  # Chosen over `qr_flutter`, which PLAN.md's dependency table names: qr_flutter
+  # last shipped in May 2023 and last saw a commit in May 2024, and label
+  # rendering sits on the critical path of the whole scanning feature. Both wrap
+  # the same `qr` package, so the encoder is identical either way and the choice
+  # is only about which wrapper is still maintained.
+  pretty_qr_code: ^3.6.0
+  # The system share sheet, which is where printing, AirDrop and "save to Files"
+  # all live — a label is useless until it is off the phone and on paper.
+  share_plus: ^13.3.0
 
 dev_dependencies:
   flutter_test:

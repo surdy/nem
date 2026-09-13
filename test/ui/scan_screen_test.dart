@@ -17,6 +17,7 @@ import 'package:nem/src/nfc/tag_gateway.dart';
 import 'package:nem/src/ui/scan_screen.dart';
 
 import '../nfc/fake_tag_gateway.dart';
+import '../notifications/fake_reminder_notifier.dart';
 
 void main() {
   late NemDatabase db;
@@ -71,6 +72,7 @@ void main() {
       ProviderScope(
         overrides: [
           databaseProvider.overrideWithValue(db),
+          reminderNotifierProvider.overrideWithValue(FakeReminderNotifier()),
           nowProvider.overrideWithValue(clock),
           clockProvider.overrideWithValue(() => clock),
           tagGatewayProvider.overrideWithValue(tags),

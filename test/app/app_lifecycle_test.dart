@@ -11,6 +11,7 @@ import 'package:nem/src/domain/interval_unit.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 
 import '../notifications/fake_digest_notifier.dart';
+import '../notifications/fake_reminder_notifier.dart';
 
 void main() {
   late NemDatabase db;
@@ -69,6 +70,7 @@ void main() {
         overrides: [
           databaseProvider.overrideWithValue(db),
           digestNotifierProvider.overrideWithValue(notifier),
+          reminderNotifierProvider.overrideWithValue(FakeReminderNotifier()),
           clockProvider.overrideWithValue(() => clock),
         ],
         child: const NemApp(),
@@ -106,6 +108,7 @@ void main() {
         overrides: [
           databaseProvider.overrideWithValue(db),
           digestNotifierProvider.overrideWithValue(FakeDigestNotifier()),
+          reminderNotifierProvider.overrideWithValue(FakeReminderNotifier()),
           clockProvider.overrideWithValue(() => clock),
         ],
         child: const NemApp(),
@@ -130,6 +133,7 @@ void main() {
         overrides: [
           databaseProvider.overrideWithValue(db),
           digestNotifierProvider.overrideWithValue(notifier),
+          reminderNotifierProvider.overrideWithValue(FakeReminderNotifier()),
           clockProvider.overrideWithValue(() => clock),
         ],
         child: const NemApp(),

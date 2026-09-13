@@ -1,3 +1,4 @@
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:timezone/timezone.dart' as tz;
 
@@ -19,8 +20,12 @@ import '../nfc/tag_gateway.dart';
 import '../notifications/digest_notifier.dart';
 import '../notifications/digest_scheduler.dart';
 import '../notifications/local_digest_notifier.dart';
+import '../notifications/local_reminder_notifier.dart';
+import '../notifications/reminder_notifier.dart';
+import '../notifications/reminder_scheduler.dart';
 import 'app.dart';
 import 'clock.dart';
+import 'task_completions.dart';
 
 /// Manual providers throughout — Riverpod 3 recommends `@riverpod` codegen only
 /// where build_runner is already earning its keep elsewhere (PLAN.md,
@@ -180,10 +185,36 @@ final digestSettingsRepositoryProvider = Provider<DigestSettingsRepository>(
   (ref) => DigestSettingsRepository(ref.watch(databaseProvider)),
 );
 
-/// The one place the notification plugin is reached from. Overridden with a
-/// fake in tests, which is the whole point of the seam.
+/// The single plugin handle both notification features drive.
+///
+/// One instance, not two. `FlutterLocalNotificationsPlugin` is a thin handle
+/// onto one platform channel, so a second instance would address the same OS
+/// queue — but `initialize` registers exactly one tap callback, and calling it
+/// twice would silently unhook the first. Sharing the handle is also what lets
+/// each feature's `pendingIds` see the other's notifications, which is what
+/// the shared 64-slot budget is counted from.
+///
+/// Never reached in tests: every test overrides the notifier providers below.
+final notificationPluginProvider = Provider<FlutterLocalNotificationsPlugin>(
+  (ref) => FlutterLocalNotificationsPlugin(),
+);
+
+/// The digest's seam onto the plugin. Overridden with a fake in tests, which
+/// is the whole point of the seam.
+///
+/// This is also the instance that calls `initialize`, and therefore the one
+/// whose callback receives *every* tap — reminders included. It routes on the
+/// payload rather than assuming the tap was a digest's.
 final digestNotifierProvider = Provider<DigestNotifier>(
-  (ref) => LocalDigestNotifier(onTapped: (_) => showDueList()),
+  (ref) => LocalDigestNotifier(
+    plugin: ref.watch(notificationPluginProvider),
+    onTapped: showNotificationTarget,
+  ),
+);
+
+/// Per-task reminders' seam onto the same plugin (CONTEXT.md — "Reminder").
+final reminderNotifierProvider = Provider<ReminderNotifier>(
+  (ref) => LocalReminderNotifier(ref.watch(notificationPluginProvider)),
 );
 
 final digestSchedulerProvider = Provider<DigestScheduler>(
@@ -203,4 +234,27 @@ final digestSettingsProvider = FutureProvider<DigestSettings>(
 /// What the OS currently allows, read without prompting.
 final digestPermissionProvider = FutureProvider<NotificationPermission>(
   (ref) => ref.watch(digestNotifierProvider).permission(),
+);
+
+/// Keeps the reminders' pending notifications in step with the tasks.
+///
+/// Reads the wall clock through [clockProvider] — `DateTime.now` in
+/// production — rather than calling it directly, so a test can pin the window
+/// the same way it pins the due list's grouping.
+final reminderSchedulerProvider = Provider<ReminderScheduler>((ref) {
+  final clock = ref.watch(clockProvider);
+  return ReminderScheduler(
+    notifier: ref.watch(reminderNotifierProvider),
+    tasks: ref.watch(taskRepositoryProvider),
+    clock: () => clock(),
+  );
+});
+
+/// The one way the UI records and takes back a completion. See
+/// [TaskCompletions] for why it is not `TaskRepository` directly.
+final taskCompletionsProvider = Provider<TaskCompletions>(
+  (ref) => TaskCompletions(
+    tasks: ref.watch(taskRepositoryProvider),
+    reminders: ref.watch(reminderSchedulerProvider),
+  ),
 );

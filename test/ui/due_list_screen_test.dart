@@ -8,14 +8,17 @@ import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/fixed_schedule.dart';
 import 'package:nem/src/domain/interval_unit.dart';
+import 'package:nem/src/domain/reminder.dart';
 import 'package:nem/src/ui/due_list_screen.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 
 import '../notifications/fake_digest_notifier.dart';
+import '../notifications/fake_reminder_notifier.dart';
 
 void main() {
   late NemDatabase db;
   late TaskRepository repository;
+  late FakeReminderNotifier reminders;
   final now = DateTime(2026, 6, 15, 10, 0);
 
   // Fixed schedules resolve their occurrences against the tz database
@@ -25,6 +28,7 @@ void main() {
   setUp(() {
     db = NemDatabase(NativeDatabase.memory());
     repository = TaskRepository(db);
+    reminders = FakeReminderNotifier();
   });
 
   tearDown(() => db.close());
@@ -35,6 +39,8 @@ void main() {
         overrides: [
           databaseProvider.overrideWithValue(db),
           digestNotifierProvider.overrideWithValue(FakeDigestNotifier()),
+          reminderNotifierProvider.overrideWithValue(reminders),
+          clockProvider.overrideWithValue(() => now),
           nowProvider.overrideWithValue(now),
         ],
         child: const MaterialApp(home: DueListScreen()),
@@ -253,6 +259,7 @@ void main() {
         overrides: [
           databaseProvider.overrideWithValue(db),
           digestNotifierProvider.overrideWithValue(FakeDigestNotifier()),
+          reminderNotifierProvider.overrideWithValue(FakeReminderNotifier()),
           clockProvider.overrideWithValue(() => clock),
         ],
         child: const MaterialApp(home: DueListScreen()),
@@ -292,6 +299,7 @@ void main() {
         overrides: [
           databaseProvider.overrideWithValue(db),
           digestNotifierProvider.overrideWithValue(FakeDigestNotifier()),
+          reminderNotifierProvider.overrideWithValue(FakeReminderNotifier()),
           clockProvider.overrideWithValue(() {
             groupings++;
             return clock;
@@ -346,6 +354,33 @@ void main() {
     expect(task.lastCompletedAt, isNull);
     expect(await repository.completionsFor(task.id), isEmpty);
 
+    await unmount(tester);
+  });
+
+  testWidgets('completing a task takes back the reminder it had pending', (
+    tester,
+  ) async {
+    // The acceptance criterion at the level the user meets it: tick the task
+    // off, and nothing arrives this evening to tell you to do it.
+    final task = await repository.createFloatingTask(
+      title: 'Put the bins out',
+      intervalN: 7,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 8),
+    );
+    await repository.setReminderTime(task.id, const ReminderTime(hour: 19));
+
+    await pumpDueList(tester);
+
+    await tester.tap(find.byTooltip('Complete'));
+    await tester.pumpAndSettle();
+
+    // The completion re-planned, and the re-plan does not contain a reminder
+    // for work that has just been done.
+    expect(reminders.cancelCount, 1);
+    expect(reminders.forTask(task.id), isEmpty);
+
+    // Let the undo window lapse so no timer outlives the test.
     await tester.pump(const Duration(seconds: 5));
     await tester.pumpAndSettle();
     await unmount(tester);
@@ -402,6 +437,29 @@ void main() {
     expect(find.text('Archived Replace the water filter'), findsOneWidget);
     expect((await repository.completionsFor(task.id)).length, 1);
 
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await unmount(tester);
+  });
+
+  testWidgets('undo puts the reminder back', (tester) async {
+    final task = await repository.createFloatingTask(
+      title: 'Put the bins out',
+      intervalN: 7,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 6, 8),
+    );
+    await repository.setReminderTime(task.id, const ReminderTime(hour: 19));
+
+    await pumpDueList(tester);
+    await tester.tap(find.byTooltip('Complete'));
+    await tester.pumpAndSettle();
+    expect(reminders.forTask(task.id), isEmpty);
+
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+
+    expect(reminders.forTask(task.id), isNotEmpty);
     await tester.pump(const Duration(seconds: 5));
     await tester.pumpAndSettle();
     await unmount(tester);

@@ -6,6 +6,7 @@ import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/due_status.dart';
 import 'package:nem/src/domain/fixed_schedule.dart';
 import 'package:nem/src/domain/interval_unit.dart';
+import 'package:nem/src/domain/reminder.dart';
 import 'package:nem/src/domain/task.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 
@@ -657,6 +658,86 @@ void main() {
         (await repository.watchArchivedTasks().first).map((t) => t.title),
         ['Descale the kettle'],
       );
+    });
+  });
+
+  group('per-task reminders', () {
+    Future<String> taskId() async {
+      final task = await repository.createFloatingTask(
+        title: 'Put the bins out',
+        intervalN: 1,
+        intervalUnit: IntervalUnit.week,
+        startDate: DateTime(2026, 6, 9),
+      );
+      return task.id;
+    }
+
+    test('a task starts with no reminder', () async {
+      final stored = await repository.watchTask(await taskId()).first;
+      expect(stored!.reminderTime, isNull);
+      expect(stored.hasReminder, isFalse);
+    });
+
+    test('opting in stores the wall-clock time', () async {
+      final id = await taskId();
+      await repository.setReminderTime(id, const ReminderTime(hour: 19));
+
+      final stored = await repository.watchTask(id).first;
+      expect(stored!.reminderTime, const ReminderTime(hour: 19));
+      expect(stored.hasReminder, isTrue);
+    });
+
+    test('it is stored as HH:mm, which is what the column is for', () async {
+      final id = await taskId();
+      await repository.setReminderTime(
+        id,
+        const ReminderTime(hour: 7, minute: 5),
+      );
+
+      final row = await (db.select(
+        db.tasks,
+      )..where((t) => t.id.equals(id))).getSingle();
+      expect(row.reminderTime, '07:05');
+    });
+
+    test('opting out clears the column', () async {
+      final id = await taskId();
+      await repository.setReminderTime(id, const ReminderTime(hour: 19));
+      await repository.setReminderTime(id, null);
+
+      final stored = await repository.watchTask(id).first;
+      expect(stored!.reminderTime, isNull);
+      final row = await (db.select(
+        db.tasks,
+      )..where((t) => t.id.equals(id))).getSingle();
+      expect(row.reminderTime, isNull);
+    });
+
+    test('setting a reminder is an edit, so updated_at moves', () async {
+      final id = await taskId();
+      final before = (await repository.watchTask(id).first)!.updatedAt;
+
+      await repository.setReminderTime(
+        id,
+        const ReminderTime(hour: 19),
+        now: before.add(const Duration(minutes: 1)),
+      );
+
+      final after = (await repository.watchTask(id).first)!.updatedAt;
+      expect(after.isAfter(before), isTrue);
+    });
+
+    test('an unreadable stored value reads as no reminder', () async {
+      // Hand-edited, or pulled from a device running something else. The
+      // launch path must not die of it.
+      final id = await taskId();
+      await db.customStatement(
+        "UPDATE tasks SET reminder_time = 'half seven' WHERE id = ?",
+        [id],
+      );
+
+      final stored = await repository.watchTask(id).first;
+      expect(stored!.reminderTime, isNull);
     });
   });
 }

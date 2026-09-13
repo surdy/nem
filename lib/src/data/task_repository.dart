@@ -4,6 +4,7 @@ import 'package:timezone/timezone.dart' as tz;
 import '../domain/completion.dart';
 import '../domain/fixed_schedule.dart';
 import '../domain/interval_unit.dart';
+import '../domain/reminder.dart';
 import '../domain/schedule.dart';
 import '../domain/snooze.dart';
 import '../domain/task.dart';
@@ -240,6 +241,34 @@ class TaskRepository {
           ),
         );
     return task;
+  }
+
+  /// Opts a task into a reminder at [time], or out of one when [time] is null
+  /// (CONTEXT.md — "Reminder").
+  ///
+  /// Unlike a completion, this *is* an edit of the task, so `updated_at` moves
+  /// with it: the reminder time is a field of the work, not a derived cache,
+  /// and once sync arrives in P3 it has to be able to win a last-write-wins
+  /// merge (PLAN.md).
+  ///
+  /// Nothing is scheduled here. Which notifications should be pending is
+  /// `planReminders`' answer, arrived at from every task at once against the
+  /// shared iOS budget, so the caller re-runs `ReminderScheduler.refresh`
+  /// afterwards rather than this reaching into the platform one task at a
+  /// time.
+  Future<void> setReminderTime(
+    String taskId,
+    ReminderTime? time, {
+    DateTime? now,
+  }) async {
+    await (_db.update(
+      _db.tasks,
+    )..where((t) => t.id.equals(taskId) & t.deletedAt.isNull())).write(
+      TasksCompanion(
+        reminderTime: Value(time?.asHhMm),
+        updatedAt: Value(now ?? DateTime.now()),
+      ),
+    );
   }
 
   /// Records that a task was performed (CONTEXT.md — "Completion").
@@ -602,7 +631,7 @@ class TaskRepository {
           : null,
       startDate: row.startDate,
       lastCompletedAt: lastCompletedAt,
-      reminderTime: row.reminderTime,
+      reminderTime: ReminderTime.tryParse(row.reminderTime ?? ''),
       snoozedUntil: row.snoozedUntil,
       snoozedAt: row.snoozedAt,
       isArchived: row.isArchived,

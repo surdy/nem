@@ -1,5 +1,6 @@
 import 'due_status.dart';
 import 'fixed_schedule.dart';
+import 'reminder.dart';
 import 'schedule.dart';
 import 'snooze.dart';
 
@@ -65,7 +66,17 @@ class Task {
   /// tombstoned, and null until the task has been completed once.
   final DateTime? lastCompletedAt;
 
-  final String? reminderTime;
+  /// The time of day this task reminds at, or null when it has not opted in
+  /// (CONTEXT.md — "Reminder"). Stored in `tasks.reminder_time` as "HH:mm".
+  ///
+  /// Only half of what decides whether a reminder fires: the other half is
+  /// whether the task is due or overdue on the day, which `planReminders`
+  /// works out. A time here is a request to be reminded *when it is due at
+  /// that hour*, not a daily alarm.
+  final ReminderTime? reminderTime;
+
+  /// Whether a reminder has been asked for at all.
+  bool get hasReminder => reminderTime != null;
 
   /// The date this task was pushed out to, when it has been snoozed.
   ///

@@ -5,6 +5,7 @@ import '../app/providers.dart';
 import '../domain/completion.dart';
 import '../domain/completion_history.dart';
 import '../domain/due_status.dart';
+import '../domain/reminder.dart';
 import '../domain/task.dart';
 import 'due_list_screen.dart' show formatDueDate;
 import 'fixed_schedule_editor.dart' show UneditableRule;
@@ -66,6 +67,7 @@ class _Detail extends ConsumerWidget {
       padding: const EdgeInsets.only(bottom: 32),
       children: [
         _Schedule(task: task, now: now),
+        _ReminderTile(task: task),
         _Summaries(summaries: history.summaries),
         const _Heading('History'),
         if (history.isEmpty)
@@ -148,6 +150,92 @@ class _Schedule extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// Where a task opts into a reminder (CONTEXT.md — "Reminder").
+///
+/// On the task rather than in Settings, because that is what makes it a
+/// reminder and not the digest: the digest is one setting for the whole app,
+/// this is one time of day chosen for this piece of work. `settings_screen.dart`
+/// says the same thing from the other side.
+class _ReminderTile extends ConsumerStatefulWidget {
+  const _ReminderTile({required this.task});
+
+  final Task task;
+
+  @override
+  ConsumerState<_ReminderTile> createState() => _ReminderTileState();
+}
+
+class _ReminderTileState extends ConsumerState<_ReminderTile> {
+  /// Stores the time and puts the pending notifications in step.
+  ///
+  /// The whole window is re-planned rather than one notification added or
+  /// removed: which reminders should be pending is a fact about every task at
+  /// once, decided against the shared iOS budget (`planReminders`).
+  Future<void> _save(ReminderTime? time) async {
+    await ref
+        .read(taskRepositoryProvider)
+        .setReminderTime(widget.task.id, time);
+    await ref.read(reminderSchedulerProvider).refresh();
+  }
+
+  /// Asks for permission at the moment the user asks for a reminder.
+  ///
+  /// The same bargain the digest strikes in `settings_screen.dart`: on iOS the
+  /// system prompt appears exactly once in the life of an install, so it is
+  /// spent where the user has just said they want a notification. A refusal
+  /// does not undo the reminder — it is stored and scheduled as normal, and
+  /// simply does not appear until notifications are allowed again.
+  Future<void> _pickTime() async {
+    final existing = widget.task.reminderTime;
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(
+        hour: existing?.hour ?? 9,
+        minute: existing?.minute ?? 0,
+      ),
+      helpText: 'Reminder time',
+    );
+    if (picked == null) return;
+
+    final notifier = ref.read(reminderNotifierProvider);
+    if (!(await notifier.permission()).isGranted) {
+      await notifier.requestPermission();
+    }
+    await _save(ReminderTime(hour: picked.hour, minute: picked.minute));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final time = widget.task.reminderTime;
+
+    return ListTile(
+      leading: Icon(
+        time == null
+            ? Icons.notifications_none_outlined
+            : Icons.notifications_active_outlined,
+      ),
+      title: const Text('Reminder'),
+      // Says what it actually does, because the surprising half is the
+      // condition and not the time: a reminder is not a daily alarm, it only
+      // arrives on the days the task is due or overdue.
+      subtitle: Text(
+        time == null
+            ? 'Off'
+            : '${TimeOfDay(hour: time.hour, minute: time.minute).format(context)}'
+                  ', on days this task is due or overdue',
+      ),
+      trailing: time == null
+          ? null
+          : IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: 'Turn off reminder',
+              onPressed: () => _save(null),
+            ),
+      onTap: _pickTime,
     );
   }
 }

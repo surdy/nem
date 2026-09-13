@@ -29,7 +29,9 @@
 	<key>NFCReaderUsageDescription</key>
 	<string>nem reads the NFC tag on a target, so the work due there can be recorded.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>nem uses the camera to scan the label on a target, so the work due there can be recorded.</string>
+	<string>nem uses the camera to scan the label on a target, and to take reference photos of what a task involves.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>nem attaches photos you choose to a task, showing what the work involves.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -524,6 +524,38 @@ class TaskRepository {
   Future<void> restoreTask(String taskId, {DateTime? now}) =>
       _setArchived(taskId, false, now);
 
+  /// Deletes a task for good — the other end of [archiveTask].
+  ///
+  /// Archiving is for work you have stopped doing and want the history of;
+  /// this is for a task that should never have existed, or whose subject is
+  /// gone. The glossary is emphatic that archive is not delete
+  /// (CONTEXT.md — "Archive"), and this is the delete it is not.
+  ///
+  /// Soft, like every other delete in nem (PLAN.md — Sync): the row is
+  /// tombstoned and kept, so the deletion beats a stale update from a phone
+  /// that had not seen it, and the other device applies the tombstone instead
+  /// of pushing the task back.
+  ///
+  /// The completion log is deliberately left where it is. Completions are
+  /// immutable events (ADR 0004) and a task's tombstone does not un-happen the
+  /// work; the rows become orphans, which every query already ignores, in
+  /// exactly the way a completion pulled ahead of its task is an orphan
+  /// (ADR 0011). Rewriting the log to erase history is the one thing nem never
+  /// does.
+  ///
+  /// Photos are *not* handled here — they are bytes as well as rows, and the
+  /// order the two go in matters. `TaskDeletion` owns that ordering and is the
+  /// one thing the UI calls.
+  Future<void> softDeleteTask(String taskId, {DateTime? now}) async {
+    final timestamp = now ?? DateTime.now();
+    await (_db.update(
+      _db.tasks,
+    )..where((t) => t.id.equals(taskId) & t.deletedAt.isNull())).write(
+      TasksCompanion(deletedAt: Value(timestamp), updatedAt: Value(timestamp)),
+    );
+    await _outbox.enqueue(_db.tasks.actualTableName, taskId, now: timestamp);
+  }
+
   Future<void> _setArchived(
     String taskId,
     bool isArchived,

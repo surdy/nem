@@ -128,8 +128,9 @@ void main() {
       'delete', () {
     final registered = defaultSyncedTables(db);
 
-    // Registration is the whole of joining sync (#12, #14): a table that is
-    // not in this list is not synced, however many repositories write to it.
+    // Registration is the whole of joining sync (#12, #14, #15): a table that
+    // is not in this list is not synced, however many repositories write to
+    // it.
     expect(
       [for (final table in registered) table.name],
       containsAll(<String>[
@@ -139,6 +140,10 @@ void main() {
         'bindings',
         'task_categories',
         'completions',
+        // A photo's row. Its *bytes* are not here and never will be: they go
+        // through `photos/photo_sync.dart`, because the outbox is a dirty set
+        // of rows and a row is not a megabyte.
+        'photos',
       ]),
     );
     for (final table in registered) {
@@ -151,5 +156,46 @@ void main() {
       // The seed walks every table in `created_at` order.
       expect(table.columnNames, contains('created_at'), reason: table.name);
     }
+  });
+
+  test('a device-local column is left out of the wire shape in both '
+      'directions', () async {
+    // `photos.local_path` is the name of the cache file holding the bytes on
+    // *this* phone. The row is shared; whether a given device has the bytes on
+    // disk is not, so sync neither pushes it nor applies it (#15).
+    final photos = SyncedTable(
+      db.photos,
+      deviceLocalColumns: const {'local_path'},
+    );
+    final codec = SyncCodec(photos, rows.types);
+
+    expect(photos.columnNames, contains('local_path'));
+    expect([
+      for (final c in photos.syncedColumns) c.name,
+    ], isNot(contains('local_path')));
+
+    final local = {
+      'id': 'photo-1',
+      'task_id': 'task-1',
+      'storage_path': 'task-1/photo-1.jpg',
+      'local_path': 'photo-1.jpg',
+      'created_at': 1,
+      'updated_at': 1,
+      'deleted_at': null,
+    };
+
+    // Out: the column simply is not in the JSON. The Postgres table does not
+    // have it, so sending it would be a 400 rather than a harmless extra.
+    expect(codec.toRemote(local).containsKey('local_path'), isFalse);
+
+    // In: a backend that sends it anyway — a hand-added column, a future
+    // build — cannot make this device believe it holds a file it has never
+    // downloaded.
+    final applied = codec.toLocal({
+      ...codec.toRemote(local),
+      'local_path': 'somewhere-else',
+    });
+    expect(applied.containsKey('local_path'), isFalse);
+    expect(applied['storage_path'], 'task-1/photo-1.jpg');
   });
 }

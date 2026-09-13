@@ -21,10 +21,12 @@ ever reads and writes rows.
    `migrations/20260913000000_nem_schema.sql`, and run it, then do the same with
    every later file in `migrations/` in filename order. They are idempotent —
    every statement is `if not exists` or `drop … if exists` first — so running
-   them twice is safe, and a project created before #12 or #14 is brought up to
-   date by the same paste.
+   them twice is safe, and a project created before #12, #14 or #15 is brought
+   up to date by the same paste.
 3. Do the **"Claim the account"** step below. Until you do, every request is
    refused by RLS and nem will say so.
+4. Do the **"Reference photos"** step below. The bucket's policy is the one
+   thing in this repository that a SQL Editor paste often cannot create.
 
 ### Option B — the Supabase CLI
 
@@ -117,10 +119,10 @@ there is no reason to let them.
 
 A change made on one phone appears on the other while both are open, rather than
 on the next foreground. That needs one thing on this side, and
-`migrations/20260913200000_realtime_publication.sql` is it: the six synced tables
-have to be members of the `supabase_realtime` publication, which is what the
-dashboard's **Database → Replication** page toggles. Apply the migration — or
-tick the six tables there — and it works; skip it and nem is exactly the app it
+`migrations/20260913210000_realtime_publication.sql` is it: the seven synced
+tables have to be members of the `supabase_realtime` publication, which is what
+the dashboard's **Database → Replication** page toggles. Apply the migration — or
+tick the seven tables there — and it works; skip it and nem is exactly the app it
 was before, syncing on foreground and on its retry timer. It is dated last of the
 migrations because it names every synced table and so wants them all to exist;
 re-run it after any later file that adds one.
@@ -150,8 +152,8 @@ specific:
 
 ## What is and is not synced
 
-All six domain tables: `targets`, `categories`, `tasks`, `bindings`,
-`task_categories` and `completions`. A completion recorded on one phone
+All seven domain tables: `targets`, `categories`, `tasks`, `bindings`,
+`task_categories`, `completions` and `photos`. A completion recorded on one phone
 reschedules the task on the other, a label or tag provisioned on one resolves on
 the other, and a task put in a category on one is in it on the other.
 
@@ -186,6 +188,78 @@ tasks are untouched and only the membership rows are tombstoned alongside it. As
 with completions, expect both tables to hold rows you have "deleted" — that is
 the design, and hard-deleting one in the Table Editor would let the other phone
 resurrect it.
+
+### Reference photos
+
+A reference photo is a file plus a row, and the two travel separately. The row
+is in `photos` and syncs like any other; the bytes go to a **Storage bucket**
+called `reference-photos`, which is the one part of nem's backend that is not a
+table.
+
+#### The bucket, and why it has to be made by hand
+
+`migrations/20260913190000_reference_photos.sql` tries to create both the bucket
+and its policy, and on a hosted project the **policy** statement usually fails:
+`storage.objects` is owned by the `supabase_storage_admin` role and the SQL
+Editor does not run as it. The migration catches that and carries on rather than
+rolling the whole file back, printing a notice. So do this once, in the
+dashboard:
+
+1. **Storage → New bucket**. Name it exactly `reference-photos` and leave
+   **Public bucket** *off*.
+
+   Private is deliberate. nem has one account (ADR 0003), the anon key ships
+   inside the app and is not a secret, and a public bucket would put every
+   photograph of the inside of your boiler cupboard on a URL that needs no
+   sign-in. The app downloads through the authenticated client, so it never
+   needs a public or a signed URL.
+
+2. **Storage → Policies → `reference-photos` → New policy → For full
+   customization**. Allow all four operations (SELECT, INSERT, UPDATE, DELETE)
+   for the `authenticated` role, and use this for both the USING and the WITH
+   CHECK expression:
+
+   ```sql
+   bucket_id = 'reference-photos' and public.is_nem_account()
+   ```
+
+   That is the same one-account allow-list the tables use, and it depends on the
+   **Claim the account** step above having been done — `is_nem_account()` comes
+   from the first migration.
+
+Objects are keyed `<task id>/<photo id>.<ext>`, so the bucket browses in the
+dashboard grouped the way the app is.
+
+#### What the row promises, and what it does not
+
+`photos.storage_path` is null until an upload has actually succeeded, and the
+device writes it only afterwards. A non-null value is therefore a promise that
+the object exists; the other device treats null as "not uploaded yet" and says
+so on the task rather than showing a broken image.
+
+`photos` has one column in Postgres that the device's table does not need to
+share, and one the device has that Postgres deliberately lacks. `local_path` —
+the name of the cache file holding the bytes on *that* phone — is never pushed
+and never applied, because whether a particular device has the bytes on disk is
+a fact about the device and not about the photo. Do not add the column "for
+completeness": nothing would write it, and a replicated one would have the
+second phone believe it holds a file it has never downloaded.
+
+#### Deleting
+
+Deleting a task, or one photo, tombstones the row first and deletes the object
+only once that tombstone has been pushed. Bytes deleted from Storage are gone
+for good and the other device may not have seen the deletion, so the ordering is
+chosen to make the *recoverable* half fail: the worst case is an object in the
+bucket that no row references, which costs storage and nothing else. The
+opposite order would leave the other phone holding a live row naming an object
+that no longer exists — indistinguishable, from over there, from one that has
+not been uploaded yet.
+
+That means the bucket accumulates orphans if a phone is lost between the two
+steps. They are invisible in the app and safe to delete by hand from **Storage →
+reference-photos**: an object whose `<photo id>` appears in no live `photos` row
+is not referenced by anything.
 
 ### Completions merge rather than resolve
 

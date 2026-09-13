@@ -91,12 +91,17 @@ void main() {
     await tester.tap(find.text('Descale the kettle'));
     await tester.pumpAndSettle();
 
+    expect(find.text('Archived'), findsWidgets);
+
     // Both completions survived being archived — that history is the reason
-    // the row is kept at all rather than deleted.
+    // the row is kept at all rather than deleted. It sits below the reference
+    // photo strip (#15), which is further down than the 600px test viewport
+    // reaches, so the list is scrolled the way a thumb would scroll it.
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -400));
+    await tester.pumpAndSettle();
     expect(find.text('HISTORY'), findsOneWidget);
     expect(find.textContaining('8 Feb 2026'), findsWidgets);
     expect(find.textContaining('5 Jan 2026'), findsWidgets);
-    expect(find.text('Archived'), findsWidgets);
     await unmount(tester);
   });
 

@@ -10,8 +10,14 @@ import 'package:nem/src/domain/binding.dart';
 import 'package:nem/src/domain/completion.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/domain/scan.dart';
+import 'package:nem/src/photos/photo.dart';
+import 'package:nem/src/photos/photo_cache.dart';
+import 'package:nem/src/photos/photo_repository.dart';
 import 'package:nem/src/sync/sync_engine.dart';
 import 'package:nem/src/sync/sync_settings.dart';
+
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'fake_sync_transport.dart';
 
@@ -585,14 +591,134 @@ void main() {
       expect(await deviceB.categories.categoriesForTask(id), hasLength(1));
     });
   });
+
+  group('reference photos', () {
+    /// The row half of a photo attached on [device]. Its bytes stay here — they
+    /// travel through `PhotoSync` and a Storage bucket, neither of which this
+    /// file knows about.
+    Future<Photo> attach(_Device device, String taskId) =>
+        device.photos.attachPhoto(
+          taskId: taskId,
+          bytes: Uint8List.fromList(const [1, 2, 3, 4]),
+          now: DateTime(2026, 6, 2, 9),
+        );
+
+    test('a photo attached on one device turns up on the other', () async {
+      final taskId = await createTask(deviceA);
+      final photo = await attach(deviceA, taskId);
+
+      await syncBoth();
+
+      final far = (await deviceB.photos.photosForTask(taskId)).single;
+      expect(far.id, photo.id);
+      expect(far.taskId, taskId);
+    });
+
+    test('the far device is told the bytes are not there yet rather than '
+        'shown a hole', () async {
+      final taskId = await createTask(deviceA);
+      await attach(deviceA, taskId);
+
+      await syncBoth();
+
+      // Nothing has been uploaded — this file has no Storage at all — so the
+      // row says so, and `local_path` is emphatically not replicated: B has
+      // never downloaded a byte and must not believe it holds a file.
+      final far = (await deviceB.photos.photosForTask(taskId)).single;
+      expect(far.isUploaded, isFalse);
+      expect(far.isCached, isFalse);
+      expect(far.localPath, isNull);
+    });
+
+    test("one device's cached copy does not overwrite the other's", () async {
+      final taskId = await createTask(deviceA);
+      final photo = await attach(deviceA, taskId);
+      await syncBoth();
+
+      // B downloads it — a device-local fact, written with no push.
+      await deviceB.photos.markCached(photo.id, 'downloaded-here.jpg');
+      await syncBoth();
+
+      expect((await deviceA.photos.photo(photo.id))!.localPath, isNotNull);
+      expect(
+        (await deviceB.photos.photo(photo.id))!.localPath,
+        'downloaded-here.jpg',
+      );
+      // And neither name has crossed to the other phone.
+      expect(
+        (await deviceA.photos.photo(photo.id))!.localPath,
+        isNot('downloaded-here.jpg'),
+      );
+    });
+
+    test(
+      'an upload recorded on one device tells the other where to look',
+      () async {
+        final taskId = await createTask(deviceA);
+        final photo = await attach(deviceA, taskId);
+        await syncBoth();
+        expect((await deviceB.photos.photo(photo.id))!.storagePath, isNull);
+
+        await deviceA.photos.markUploaded(
+          photo.id,
+          '$taskId/${photo.id}.jpg',
+          now: DateTime(2026, 6, 3, 9),
+        );
+        await syncBoth();
+
+        expect(
+          (await deviceB.photos.photo(photo.id))!.storagePath,
+          '$taskId/${photo.id}.jpg',
+        );
+      },
+    );
+
+    test('deleting a photo on one device deletes it on the other', () async {
+      final taskId = await createTask(deviceA);
+      final photo = await attach(deviceA, taskId);
+      await syncBoth();
+      expect(await deviceB.photos.photosForTask(taskId), hasLength(1));
+
+      await deviceA.photos.deletePhoto(photo.id, now: DateTime(2026, 6, 4, 9));
+      await syncBoth();
+
+      expect(await deviceB.photos.photosForTask(taskId), isEmpty);
+      // The tombstone is kept rather than the row deleted, so B cannot push it
+      // back (PLAN.md — Sync).
+      expect((await deviceB.photos.photo(photo.id))!.isDeleted, isTrue);
+      // And B drops its own copy of the bytes rather than keeping a file
+      // nothing references.
+      await deviceB.photos.reconcile(now: DateTime(2026, 6, 4, 10));
+      expect((await deviceB.photos.photo(photo.id))!.localPath, isNull);
+    });
+
+    test('a photo that arrives before its task is kept', () async {
+      // No foreign key on `photos.task_id`, for exactly ADR 0011's reason: a
+      // pull delivers rows per table in no guaranteed order.
+      final taskId = await createTask(deviceA);
+      final photo = await attach(deviceA, taskId);
+      await deviceA.engine.sync();
+
+      await deviceB.engine.pull();
+
+      expect((await deviceB.photos.photo(photo.id))!.taskId, taskId);
+    });
+  });
 }
 
 /// One phone: its own database, its own cursors, its own outbox.
 class _Device {
-  _Device._(this.db, this.settings, this.tasks, this.engine)
+  _Device._(this.db, this.settings, this.tasks, this.engine, this.cacheRoot)
     : targets = TargetRepository(db),
       bindings = BindingRepository(db),
-      categories = CategoryRepository(db);
+      categories = CategoryRepository(db),
+      // Its *own* directory, because the two devices are two phones: one
+      // holding a photo's bytes says nothing about whether the other does
+      // (#15).
+      photos = PhotoRepository(
+        db: db,
+        cache: PhotoCache(Future.value(cacheRoot)),
+      );
 
   static Future<_Device> open(
     FakeSyncTransport transport,
@@ -614,6 +740,7 @@ class _Device {
         settings: settings,
         tasks: tasks,
       ),
+      await Directory.systemTemp.createTemp('nem-convergence-photos'),
     );
   }
 
@@ -624,6 +751,8 @@ class _Device {
   final TargetRepository targets;
   final BindingRepository bindings;
   final CategoryRepository categories;
+  final Directory cacheRoot;
+  final PhotoRepository photos;
 
   late final ScanResolver resolver = ScanResolver(
     RepositoryScanLookup(bindings: bindings, targets: targets, tasks: tasks),
@@ -651,5 +780,8 @@ class _Device {
   Future<void> outboxTask(String taskId) =>
       engine.outbox.enqueue('tasks', taskId, now: DateTime(2026, 6, 6, 9));
 
-  Future<void> close() => db.close();
+  Future<void> close() async {
+    await db.close();
+    if (cacheRoot.existsSync()) await cacheRoot.delete(recursive: true);
+  }
 }

@@ -1,4 +1,4 @@
--- Realtime for the six synced tables (#13).
+-- Realtime for the seven synced tables (#13).
 --
 -- Postgres Changes is switched off for a table until that table is a member of
 -- the `supabase_realtime` publication; a channel bound to a table that is not in
@@ -6,7 +6,9 @@
 -- possible failure and the reason this file exists rather than being a line in
 -- the dashboard someone has to remember.
 --
--- Dated after `20260913180000_categories.sql` on purpose. The list below is
+-- Dated after `20260913190000_reference_photos.sql` on purpose, and re-dated
+-- whenever a migration adds a synced table — #15 moved it once already, for
+-- `photos`. The list below is
 -- `defaultSyncedTables` (`lib/src/sync/sync_engine.dart`), and every table in it
 -- has to exist before it can be published, so this file wants to be the last one
 -- pasted — and wants re-running whenever a later migration adds a table.
@@ -40,7 +42,7 @@ begin
 
   foreach t in array array[
     'targets', 'categories', 'tasks', 'bindings', 'task_categories',
-    'completions'
+    'completions', 'photos'
   ] loop
     if not exists (
       select 1 from pg_publication_tables

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../photos/photo_sync.dart';
 import 'sync_engine.dart';
 
 /// The shortest and longest a failed sync waits before trying again.
@@ -29,6 +30,7 @@ class SyncStatus {
     this.account,
     this.isSyncing = false,
     this.pending = 0,
+    this.pendingPhotos = 0,
     this.lastSyncedAt,
     this.lastError,
     this.isAuthFailure = false,
@@ -44,6 +46,12 @@ class SyncStatus {
 
   /// Rows waiting in the outbox.
   final int pending;
+
+  /// Photos waiting on the byte queue — uploads, downloads and removals
+  /// (#15). Counted separately from [pending] because they are a separate
+  /// queue: a phone can owe the backend no rows at all and still owe it a
+  /// photograph.
+  final int pendingPhotos;
 
   final DateTime? lastSyncedAt;
 
@@ -64,6 +72,7 @@ class SyncStatus {
     bool clearAccount = false,
     bool? isSyncing,
     int? pending,
+    int? pendingPhotos,
     DateTime? lastSyncedAt,
     String? lastError,
     bool clearError = false,
@@ -73,6 +82,7 @@ class SyncStatus {
     account: clearAccount ? null : (account ?? this.account),
     isSyncing: isSyncing ?? this.isSyncing,
     pending: pending ?? this.pending,
+    pendingPhotos: pendingPhotos ?? this.pendingPhotos,
     lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,
     lastError: clearError ? null : (lastError ?? this.lastError),
     isAuthFailure: clearError ? false : (isAuthFailure ?? this.isAuthFailure),
@@ -90,10 +100,30 @@ class SyncStatus {
 /// device that has never signed in creates no client, arms no timer and makes
 /// no request (ADR 0001).
 class SyncRunner {
-  SyncRunner({required this.engine, this.onStatus, this.clock = DateTime.now});
+  SyncRunner({
+    required this.engine,
+    this.photos,
+    this.onStatus,
+    this.clock = DateTime.now,
+  });
 
   /// Null when nem has no backend configured, which is the ordinary state.
   final SyncEngine? engine;
+
+  /// The photo bytes' drain, or null when there is nowhere to put them (#15).
+  ///
+  /// Run *after* the engine, never alongside it, and that ordering is load
+  /// bearing in both directions: the outbox has to go first so that a photo's
+  /// tombstone is pushed before its object is deleted (`PhotoSync.drain`), and
+  /// the pull has to go first so that a photo row that has just arrived from
+  /// the other device queues its download in the same sync rather than the
+  /// next one.
+  ///
+  /// It shares this class's retry rather than arming one of its own. There is
+  /// one question — "is there a network yet" — and it is answered by trying;
+  /// two independent backoffs would ask it twice as often and disagree about
+  /// the answer.
+  final PhotoSync? photos;
 
   /// Called whenever the status changes, so a provider can publish it.
   final void Function(SyncStatus)? onStatus;
@@ -107,6 +137,13 @@ class SyncRunner {
   SyncStatus _status = const SyncStatus();
 
   SyncStatus get status => _status;
+
+  /// Whether a retry is waiting on the backoff timer.
+  ///
+  /// The one thing about the retry a test can observe without a fake clock:
+  /// *that* one was armed, rather than how long it will wait — which
+  /// [nextRetryDelay] is tested for on its own.
+  bool get hasRetryScheduled => _retry?.isActive ?? false;
 
   /// Pushes and pulls once, and arms a retry if anything is still waiting.
   ///
@@ -136,30 +173,41 @@ class SyncRunner {
     try {
       await engine.seed(now: clock());
       final report = await engine.sync();
-      if (report.isComplete) {
+      // The rows first, then the bytes. A failed drain is a failed network, so
+      // there is nothing to be gained by asking Storage the same question.
+      final photos = report.isComplete ? await this.photos?.sync() : null;
+      final pendingPhotos = photos?.pending ?? _status.pendingPhotos;
+      final failure = report.failure;
+      final photoFailure = photos?.failure;
+
+      if (report.isComplete && photoFailure == null) {
         _failures = 0;
         _publish(
           _status.copyWith(
             isSyncing: false,
             pending: report.pending,
+            pendingPhotos: pendingPhotos,
             lastSyncedAt: clock(),
             clearError: true,
           ),
         );
       } else {
         _failures++;
+        final isAuthFailure =
+            failure?.isAuthFailure ?? photoFailure!.isAuthFailure;
         _publish(
           _status.copyWith(
             isSyncing: false,
             pending: report.pending,
-            lastError: report.failure!.message,
-            isAuthFailure: report.failure!.isAuthFailure,
+            pendingPhotos: pendingPhotos,
+            lastError: failure?.message ?? photoFailure!.message,
+            isAuthFailure: isAuthFailure,
           ),
         );
         // An expired token is not a network that is about to come back — the
         // user has to sign in again — so retrying on a timer would be a loop
         // that never succeeds and a battery that never recovers.
-        if (!report.failure!.isAuthFailure) _armRetry();
+        if (!isAuthFailure) _armRetry();
       }
       return report;
     } on Object catch (error) {
@@ -178,7 +226,10 @@ class SyncRunner {
 
   void _armRetry() {
     _cancelRetry();
-    if (_status.pending == 0) return;
+    // Only while something is actually waiting — a row, or a photo's bytes.
+    // A failure with nothing queued is a pull that could not run, and the next
+    // foreground will take care of that without a timer burning battery.
+    if (_status.pending == 0 && _status.pendingPhotos == 0) return;
     _retry = Timer(
       nextRetryDelay(_failures),
       () => syncNow(account: _status.account),

@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../app/providers.dart';
+import '../photos/photo_providers.dart';
 import 'outbox_store.dart';
 import 'realtime_sync.dart';
 import 'supabase_connection.dart';
@@ -200,6 +201,10 @@ final syncStatusProvider = NotifierProvider<SyncStatusStore, SyncStatus>(
 final syncRunnerProvider = Provider<SyncRunner>((ref) {
   final runner = SyncRunner(
     engine: ref.watch(syncEngineProvider),
+    // The bytes half of a reference photo (#15). Rebuilt with the engine,
+    // because both are null for exactly the same reason: no configured
+    // backend.
+    photos: ref.watch(photoSyncProvider),
     onStatus: (status) => ref.read(syncStatusProvider.notifier).publish(status),
   );
   ref.onDispose(runner.dispose);

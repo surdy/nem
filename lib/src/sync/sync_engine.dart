@@ -10,11 +10,12 @@ import 'synced_table.dart';
 
 /// The tables sync moves.
 ///
-/// All six of them, and the whole of what #12 and #14 had to add to the engine:
-/// the outbox, the drain, the pull, the cursor and the merge are written
-/// against [SyncedTable] rather than against any particular table, so
+/// All seven of them, and the whole of what #12, #14 and #15 had to add to the
+/// engine: the outbox, the drain, the pull, the cursor and the merge are
+/// written against [SyncedTable] rather than against any particular table, so
 /// registering one is the entire job. #14 added categories and their membership
-/// join table by adding two lines here.
+/// join table by adding two lines here; #15 added a photo's *row* by adding
+/// one.
 ///
 /// The order is roughly parents before children — a target before the tasks and
 /// bindings that name it, a category before the memberships that name it, a
@@ -36,6 +37,12 @@ List<SyncedTable> defaultSyncedTables(NemDatabase db) => [
   SyncedTable(db.bindings),
   SyncedTable(db.taskCategories),
   SyncedTable(db.completions),
+  // A photo's *row* syncs here like any other; its bytes do not, and go
+  // through `photos/photo_sync.dart` instead. `local_path` says whether this
+  // device holds those bytes, which is true of a device rather than of the
+  // photo, so it is excluded from the wire shape — see
+  // `SyncedTable.deviceLocalColumns`.
+  SyncedTable(db.photos, deviceLocalColumns: const {'local_path'}),
 ];
 
 /// How many rows one pull request asks for.

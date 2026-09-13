@@ -54,6 +54,14 @@ dependencies:
   # `lib/src/nfc/ndef_uri.dart` assembles the record by hand.
   nfc_manager_ndef: ^1.1.0
 
+  # The camera and the photo library, for reference photos on a task (#15).
+  #
+  # 1.x, and the one thing worth knowing is that the 0.8.x examples still all
+  # over the web do not compile: `PickedFile` became `XFile`, and `getImage`
+  # became `pickImage`. It declares its own Android permissions and needs none
+  # of its own on iOS beyond the usage descriptions in Runner/Info.plist.
+  image_picker: ^1.2.3
+
   # Auth, Postgres and realtime against Supabase (ADR 0002 — spoken to
   # directly, with no gateway layer in between).
   #

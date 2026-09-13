@@ -52,6 +52,14 @@ class TaskActionsMenu extends ConsumerWidget {
             value: _Archive(),
             child: Text('Archive'),
           ),
+        // Last, and separated, because it is the one thing here that is not
+        // undoable from a snackbar: archiving keeps everything and this keeps
+        // nothing but the completion log.
+        const PopupMenuDivider(),
+        const PopupMenuItem<_Choice>(
+          value: _Delete(),
+          child: Text('Delete task'),
+        ),
       ],
     );
   }
@@ -84,7 +92,46 @@ class TaskActionsMenu extends ConsumerWidget {
         );
       case _Restore():
         await repository.restoreTask(task.id, now: now);
+      case _Delete():
+        if (!await _confirmDelete(context)) return;
+        // Through `TaskDeletion` rather than the repository, because deleting a
+        // task also deletes its reference photos — rows, cached files and the
+        // objects in Storage — and the order those go in matters.
+        await ref.read(taskDeletionProvider).delete(task.id);
+        messenger
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text('Deleted ${task.title}')));
     }
+  }
+
+  /// Asks first, because there is no undo.
+  ///
+  /// The same shape as deleting a target (`target_detail_screen.dart`), and
+  /// the dialog says what is kept and what is not: the completion log survives
+  /// a deleted task (ADR 0004), the photos do not.
+  Future<bool> _confirmDelete(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete ${task.title}?'),
+        content: const Text(
+          'The task and its reference photos are deleted on both devices. '
+          'Archive it instead to keep it and its history.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            key: const Key('confirm-delete-task'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
   }
 
   /// Says what happened and offers to take it back.
@@ -155,4 +202,8 @@ final class _Archive extends _Choice {
 
 final class _Restore extends _Choice {
   const _Restore();
+}
+
+final class _Delete extends _Choice {
+  const _Delete();
 }

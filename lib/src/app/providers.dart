@@ -29,9 +29,11 @@ import '../notifications/local_digest_notifier.dart';
 import '../notifications/local_reminder_notifier.dart';
 import '../notifications/reminder_notifier.dart';
 import '../notifications/reminder_scheduler.dart';
+import '../photos/photo_providers.dart';
 import 'app.dart';
 import 'clock.dart';
 import 'task_completions.dart';
+import 'task_deletion.dart';
 
 /// Manual providers throughout — Riverpod 3 recommends `@riverpod` codegen only
 /// where build_runner is already earning its keep elsewhere (PLAN.md,
@@ -358,6 +360,16 @@ final reminderSchedulerProvider = Provider<ReminderScheduler>((ref) {
 final taskCompletionsProvider = Provider<TaskCompletions>(
   (ref) => TaskCompletions(
     tasks: ref.watch(taskRepositoryProvider),
+    reminders: ref.watch(reminderSchedulerProvider),
+  ),
+);
+
+/// The one way the UI deletes a task, for the same reason: deleting one has to
+/// take its reference photos and its pending reminders with it, in that order.
+final taskDeletionProvider = Provider<TaskDeletion>(
+  (ref) => TaskDeletion(
+    tasks: ref.watch(taskRepositoryProvider),
+    photos: ref.watch(photoRepositoryProvider),
     reminders: ref.watch(reminderSchedulerProvider),
   ),
 );

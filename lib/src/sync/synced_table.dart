@@ -16,7 +16,11 @@ import 'package:drift/drift.dart';
 /// the meaning of those columns stays where it already lives — in the
 /// repositories and the domain.
 class SyncedTable {
-  const SyncedTable(this.info, {this.clockColumn = 'updated_at'});
+  const SyncedTable(
+    this.info, {
+    this.clockColumn = 'updated_at',
+    this.deviceLocalColumns = const {},
+  });
 
   /// drift's description of the table: its SQL name, its columns and their
   /// types. Read at runtime so a new column is picked up by regenerating, not
@@ -44,7 +48,31 @@ class SyncedTable {
   /// other and both devices keep the row they already have.
   final String clockColumn;
 
+  /// Columns of a synced table that are nonetheless this device's own
+  /// business, and which sync therefore neither pushes nor applies.
+  ///
+  /// One column needs this and it is `photos.local_path`: the photo row is
+  /// shared, but whether *this* phone has the bytes cached on disk is not. A
+  /// replicated `local_path` would have the second device believe it holds a
+  /// file it has never downloaded, and the far end would then show a broken
+  /// image instead of "waiting for the other device".
+  ///
+  /// The alternative — a second, device-local table paired one-to-one with
+  /// `photos` — buys nothing: the column is genuinely a property of the photo,
+  /// it is just a property with a different *scope*. Naming that scope here is
+  /// cheaper than a join, and it keeps the remote schema honest, because the
+  /// Postgres table simply does not have the column at all.
+  ///
+  /// Excluded in both directions and in the comparison, so a column left out
+  /// of the wire shape cannot read as a change on every pull.
+  final Set<String> deviceLocalColumns;
+
   String get name => info.actualTableName;
+
+  /// The columns sync moves — every column of the table but the device-local
+  /// ones.
+  Iterable<GeneratedColumn<Object>> get syncedColumns =>
+      info.$columns.where((c) => !deviceLocalColumns.contains(c.name));
 
   /// The SQL column names, in the order drift declares them.
   List<String> get columnNames => [for (final c in info.$columns) c.name];
@@ -75,7 +103,7 @@ class SyncCodec {
   /// A raw SQLite row — the map a `SELECT *` hands back — as PostgREST JSON.
   Map<String, Object?> toRemote(Map<String, Object?> local) {
     return {
-      for (final column in table.info.$columns)
+      for (final column in table.syncedColumns)
         column.name: _toRemoteValue(column, local[column.name]),
     };
   }
@@ -84,10 +112,11 @@ class SyncCodec {
   ///
   /// Columns the remote does not send are left out rather than written as
   /// null, so a backend running an older migration cannot blank a column this
-  /// build added.
+  /// build added. Device-local columns are left out for the stronger reason
+  /// that nothing the remote could say about them would be true here.
   Map<String, Object?> toLocal(Map<String, Object?> remote) {
     return {
-      for (final column in table.info.$columns)
+      for (final column in table.syncedColumns)
         if (remote.containsKey(column.name))
           column.name: _toLocalValue(column, remote[column.name]),
     };

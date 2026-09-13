@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nem/src/data/binding_repository.dart';
@@ -9,6 +12,9 @@ import 'package:nem/src/domain/binding.dart';
 import 'package:nem/src/domain/category.dart';
 import 'package:nem/src/domain/completion.dart';
 import 'package:nem/src/domain/interval_unit.dart';
+import 'package:nem/src/photos/photo.dart';
+import 'package:nem/src/photos/photo_cache.dart';
+import 'package:nem/src/photos/photo_repository.dart';
 import 'package:nem/src/sync/outbox_store.dart';
 
 /// The schema version 1 `tasks` table, exactly as drift created it before
@@ -121,6 +127,31 @@ const _v7Schema = [
   'PRAGMA user_version = 7',
 ];
 
+/// What schema version 8 added on top of [_v7Schema] — categories and the
+/// membership join table (#14). A device that took the categories build but not
+/// the reference-photos one has this on disk, and no `photos` or
+/// `photo_transfers` tables at all.
+const _v8Schema = [
+  ..._v7Schema,
+  'CREATE TABLE "categories" ("id" TEXT NOT NULL, "name" TEXT NOT NULL, '
+      '"color" INTEGER NULL, "created_at" INTEGER NOT NULL, '
+      '"updated_at" INTEGER NOT NULL, "deleted_at" INTEGER NULL, '
+      'PRIMARY KEY ("id"))',
+  'CREATE INDEX idx_categories_deleted_at ON categories (deleted_at)',
+  'CREATE TABLE "task_categories" ("id" TEXT NOT NULL, '
+      '"task_id" TEXT NOT NULL, "category_id" TEXT NOT NULL, '
+      '"created_at" INTEGER NOT NULL, "updated_at" INTEGER NOT NULL, '
+      '"deleted_at" INTEGER NULL, PRIMARY KEY ("id"))',
+  'CREATE INDEX idx_task_categories_task_id ON task_categories (task_id)',
+  'CREATE INDEX idx_task_categories_category_id '
+      'ON task_categories (category_id)',
+  'CREATE INDEX idx_task_categories_deleted_at '
+      'ON task_categories (deleted_at)',
+  'CREATE UNIQUE INDEX idx_task_categories_pair '
+      'ON task_categories (task_id, category_id)',
+  'PRAGMA user_version = 8',
+];
+
 /// Inserts the one task every migration test starts from.
 const _insertTask =
     'INSERT INTO tasks (id, title, schedule_mode, interval_n, '
@@ -178,7 +209,7 @@ void main() {
     expect(task.lastCompletedAt, isNull);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 8);
+    expect(version.data.values.single, 9);
 
     // And the new tables are usable, indexes included.
     final completion = await repository.recordCompletion(
@@ -261,7 +292,7 @@ void main() {
     expect((await targets.allTargets()).single.id, target.id);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 8);
+    expect(version.data.values.single, 9);
   });
 
   test('upgrading from version 3 adds bindings and keeps the targets and '
@@ -323,7 +354,7 @@ void main() {
     );
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 8);
+    expect(version.data.values.single, 9);
 
     final indexes = await db
         .customSelect(
@@ -401,7 +432,7 @@ void main() {
     expect(task.dueDate, DateTime(2026, 4, 4, 9));
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 8);
+    expect(version.data.values.single, 9);
 
     // And the new columns are usable: a snooze written after the upgrade takes
     // effect and survives a recomputation.
@@ -479,7 +510,7 @@ void main() {
     expect(task.dueDate, DateTime(2026, 4, 4, 9));
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 8);
+    expect(version.data.values.single, 9);
 
     // Nothing is queued by the upgrade itself. A device upgrading into this
     // build has no backend configured, and what it already holds is queued by
@@ -577,7 +608,7 @@ void main() {
     expect(task.dueDate, DateTime(2026, 4, 4, 9));
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 8);
+    expect(version.data.values.single, 9);
 
     // The constraint is gone. SQLite cannot drop one in place, so this is the
     // `TableMigration` doing its job rather than an `ALTER TABLE` that never
@@ -690,7 +721,7 @@ void main() {
     expect(await categories.categoriesForTask('task-1'), isEmpty);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.single, 8);
+    expect(version.data.values.single, 9);
 
     // Nothing is queued by the upgrade itself, for the reason version 6 gives:
     // what a device already holds is seeded the first time a backend is
@@ -727,6 +758,126 @@ void main() {
         'idx_task_categories_category_id',
         'idx_task_categories_deleted_at',
         'idx_task_categories_pair',
+      ]),
+    );
+  });
+
+  test('upgrading from version 8 adds photos and their transfer queue, and '
+      'keeps everything that was already there', () async {
+    final startDate = DateTime(2026, 3, 1, 9);
+    final dueDate = DateTime(2026, 3, 31, 9);
+    final completedAt = DateTime(2026, 3, 5, 9);
+
+    final db = NemDatabase(
+      NativeDatabase.memory(
+        setup: (raw) {
+          for (final statement in _v8Schema) {
+            raw.execute(statement);
+          }
+          raw.execute(_insertTask, [
+            'task-1',
+            'Replace the water filter',
+            'floating',
+            30,
+            'day',
+            _seconds(startDate),
+            _seconds(dueDate),
+            _seconds(startDate),
+            _seconds(startDate),
+          ]);
+          raw.execute(
+            'INSERT INTO completions (id, task_id, completed_at, source, '
+            'device_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [
+              'completion-1',
+              'task-1',
+              _seconds(completedAt),
+              'manual',
+              'device-1',
+              _seconds(completedAt),
+              _seconds(completedAt),
+            ],
+          );
+          raw.execute(
+            'INSERT INTO categories (id, name, created_at, updated_at) '
+            'VALUES (?, ?, ?, ?)',
+            ['category-1', 'Kitchen', _seconds(startDate), _seconds(startDate)],
+          );
+          raw.execute(
+            'INSERT INTO task_categories (id, task_id, category_id, '
+            'created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+            [
+              'membership-1',
+              'task-1',
+              'category-1',
+              _seconds(startDate),
+              _seconds(startDate),
+            ],
+          );
+        },
+      ),
+    );
+    addTearDown(db.close);
+
+    final tasks = TaskRepository(db);
+    final categories = CategoryRepository(db);
+    final outbox = OutboxStore(db);
+
+    // v9 only adds. The task, its completion, the due date derived from that
+    // completion (ADR 0004) and the membership version 8 wrote are all exactly
+    // where they were.
+    final task = (await tasks.allTasks()).single;
+    expect(task.id, 'task-1');
+    expect(task.lastCompletedAt, completedAt);
+    expect(task.dueDate, DateTime(2026, 4, 4, 9));
+    expect(
+      (await categories.categoriesForTask('task-1')).single.name,
+      'Kitchen',
+    );
+
+    final version = await db.customSelect('PRAGMA user_version').getSingle();
+    expect(version.data.values.single, 9);
+
+    // Both new tables start empty, and there is nothing to backfill: bytes are
+    // not rows, and a migration cannot invent an image. Nothing is queued by
+    // the upgrade either, for the reason version 6 gives.
+    expect(await db.select(db.photos).get(), isEmpty);
+    expect(await db.select(db.photoTransfers).get(), isEmpty);
+    expect(await outbox.count(), 0);
+
+    // And they are usable. Attaching a photo writes the file, the row and both
+    // queue entries, which is the whole of what the new schema is for.
+    final root = await Directory.systemTemp.createTemp('nem-migration');
+    addTearDown(() => root.delete(recursive: true));
+    final photos = PhotoRepository(
+      db: db,
+      cache: PhotoCache(Future.value(root)),
+    );
+    final photo = await photos.attachPhoto(
+      taskId: 'task-1',
+      bytes: Uint8List.fromList(const [1, 2, 3]),
+      now: DateTime(2026, 4, 4, 9),
+    );
+    expect((await photos.photosForTask('task-1')).single.id, photo.id);
+    expect(
+      (await photos.transfers.find(photo.id))?.operation,
+      PhotoTransferOperation.upload,
+    );
+    expect(await outbox.holds('photos', photo.id), isTrue);
+
+    // The indexes come with the tables.
+    final indexes = await db
+        .customSelect(
+          "SELECT name FROM sqlite_master WHERE type = 'index' "
+          "AND tbl_name IN ('photos', 'photo_transfers')",
+        )
+        .get();
+    expect(
+      indexes.map((row) => row.data['name']),
+      containsAll(<String>[
+        'idx_photos_task_id',
+        'idx_photos_deleted_at',
+        'idx_photo_transfers_enqueued_at',
       ]),
     );
   });

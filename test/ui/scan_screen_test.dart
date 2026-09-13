@@ -328,7 +328,7 @@ void main() {
       final completions = await completionsOf('Bleed the radiators');
       expect(completions.length, 1);
       // The criterion: a completion recorded off a tag says so, and the only
-      // thing that could have told it is the carrier the screen passed in.
+      // thing that could have told it is the reader the screen passed in.
       expect(completions.single.source, CompletionSource.tag);
       expect(haptics, isNotEmpty);
       expect(
@@ -345,7 +345,7 @@ void main() {
       tester,
     ) async {
       // `nem://t/<uuid>` is byte-identical on a tag and on a printed label
-      // (ADR 0009), and the carrier is the only thing that separates them. A
+      // (ADR 0009), and the reader is the only thing that separates them. A
       // boiler that has only ever been labelled has no tag bound, so a tag
       // carrying its URI is a code nem does not know yet.
       await labelTheBoiler();

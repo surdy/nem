@@ -35,8 +35,8 @@ const scanUndoWindow = Duration(seconds: 5);
 /// camera, the NFC session, the haptic and the toast; what a scanned string
 /// *means* is [ScanResolver]'s answer, and this widget only carries out the
 /// outcome it is handed (PLAN.md — Resolution). Both readers hand their string
-/// to the same resolver and differ in one argument, the [ScanCarrier] — which
-/// is the only thing that can say a `nem://t/<uuid>` came off a tag rather than
+/// to the same resolver and differ in one argument, the [ScanReader] — which is
+/// the only thing that can say a `nem://t/<uuid>` came off a tag rather than
 /// off a printed label, since the two are byte-identical (ADR 0009).
 class ScanScreen extends ConsumerStatefulWidget {
   const ScanScreen({super.key, this.previewBuilder});
@@ -142,7 +142,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
     switch (read) {
       case TagValueRead(:final value):
-        await _onScanned(value, carrier: ScanCarrier.nfc);
+        await _onScanned(value, reader: ScanReader.nfc);
       case TagUnreadable(:final detail):
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
@@ -156,14 +156,14 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
   Future<void> _onScanned(
     String raw, {
-    ScanCarrier carrier = ScanCarrier.camera,
+    ScanReader reader = ScanReader.camera,
   }) async {
     if (_handling) return;
     _handling = true;
     try {
       final outcome = await ref
           .read(scanResolverProvider)
-          .resolve(raw, carrier: carrier, now: ref.read(clockProvider)());
+          .resolve(raw, reader: reader, now: ref.read(clockProvider)());
       if (!mounted) return;
       await _present(outcome);
     } finally {

@@ -177,22 +177,22 @@ void main() {
 
   group('parsing a scanned code', () {
     test('a nem URI off the camera is a label', () {
-      final code = ScannedCode.parse('nem://t/abc', ScanCarrier.camera);
+      final code = ScannedCode.parse('nem://t/abc', ScanReader.camera);
       expect(code.kind, BindingKind.label);
       expect(code.value, 'abc');
       expect(code.isScanUri, isTrue);
     });
 
     test('anything else off the camera is a barcode, kept raw', () {
-      final code = ScannedCode.parse(' 5010358210016 ', ScanCarrier.camera);
+      final code = ScannedCode.parse(' 5010358210016 ', ScanReader.camera);
       expect(code.kind, BindingKind.barcode);
       expect(code.value, '5010358210016');
       expect(code.isScanUri, isFalse);
     });
 
-    test('the same URI off NFC is a tag — only the carrier tells them '
+    test('the same URI off NFC is a tag — only the reader tells them '
         'apart', () {
-      final code = ScannedCode.parse('nem://t/abc', ScanCarrier.nfc);
+      final code = ScannedCode.parse('nem://t/abc', ScanReader.nfc);
       expect(code.kind, BindingKind.tag);
       expect(code.value, 'abc');
     });
@@ -350,11 +350,11 @@ void main() {
       expect(outcome, isA<ScanUnknownCode>());
     });
 
-    test('the binding is looked up under the carrier\'s kind', () async {
+    test('the binding is looked up under the reader\'s kind', () async {
       await resolver.resolve(labelUriFor(boiler.id), now: _epoch);
       await resolver.resolve(
         labelUriFor(boiler.id),
-        carrier: ScanCarrier.nfc,
+        reader: ScanReader.nfc,
         now: _epoch.add(const Duration(minutes: 1)),
       );
 

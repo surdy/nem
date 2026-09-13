@@ -3,48 +3,53 @@ import 'due_status.dart';
 import 'target.dart';
 import 'task.dart';
 
-/// What a scanned value was read off (CONTEXT.md — "Scan").
+/// The hardware a scan came in through (CONTEXT.md — "Reader").
 ///
-/// The carrier is the only thing that can say which [BindingKind] a raw string
-/// belongs to: `nem://t/<uuid>` is identical on an NFC tag and on a printed QR
-/// code, and only the reader knows which one it came from. Keeping it an
-/// argument rather than a guess is what lets #8 and #10 reuse [ScanResolver]
-/// unchanged.
-enum ScanCarrier {
-  /// The camera — a QR code, which is a [BindingKind.label] when it carries a
+/// A different axis from the carrier, which is which of the three kinds of code
+/// the value was read off. The reader narrows the carrier without deciding it:
+/// the camera reads both labels and barcodes, and only what is in front of it
+/// says which. [ScannedCode.kind] is where that derivation happens.
+///
+/// The reader is nevertheless the only thing that can settle a [BindingKind]
+/// for a raw string: `nem://t/<uuid>` is identical on an NFC tag and on a
+/// printed QR code, and only the hardware knows which one it came from. Keeping
+/// it an argument rather than a guess is what lets #8 and #10 reuse
+/// [ScanResolver] unchanged.
+enum ScanReader {
+  /// The camera. Its carrier is a [BindingKind.label] when the code carries a
   /// nem URI and a [BindingKind.barcode] when it carries anything else.
   camera,
 
-  /// NFC hardware, which is always a [BindingKind.tag].
+  /// NFC hardware. Its carrier is always a [BindingKind.tag].
   nfc,
 }
 
-/// A raw scanned string, parsed against the carrier that read it.
+/// A raw scanned string, parsed against the reader it came in through.
 ///
 /// Pure: parsing never touches the database, so "what kind of code is this and
 /// what value would a binding store for it" is answerable without one.
 class ScannedCode {
   const ScannedCode({
     required this.raw,
-    required this.carrier,
+    required this.reader,
     required this.kind,
     required this.value,
     required this.isScanUri,
   });
 
-  /// Parses [raw] as read by [carrier].
-  factory ScannedCode.parse(String raw, ScanCarrier carrier) {
+  /// Parses [raw] as read through [reader].
+  factory ScannedCode.parse(String raw, ScanReader reader) {
     final targetId = targetIdFromScanUri(raw);
     return ScannedCode(
       raw: raw,
-      carrier: carrier,
+      reader: reader,
       isScanUri: targetId != null,
-      kind: switch (carrier) {
+      kind: switch (reader) {
         // An NFC tag is a tag whatever it carries. A third-party tag with a
         // payload of its own is still bindable by that payload, which is #8's
         // problem and not a reason to call it something else here.
-        ScanCarrier.nfc => BindingKind.tag,
-        ScanCarrier.camera =>
+        ScanReader.nfc => BindingKind.tag,
+        ScanReader.camera =>
           targetId == null ? BindingKind.barcode : BindingKind.label,
       },
       value: targetId ?? raw.trim(),
@@ -54,9 +59,12 @@ class ScannedCode {
   /// Exactly what the reader handed over, before any trimming.
   final String raw;
 
-  final ScanCarrier carrier;
+  /// The hardware this code came in through.
+  final ScanReader reader;
 
-  /// The kind a binding for this code would have.
+  /// The carrier: which of the three kinds of code this was read off
+  /// (CONTEXT.md — "Carrier"), derived from the reader and from whether the
+  /// value is one of nem's URIs. Also the kind a binding for it would have.
   final BindingKind kind;
 
   /// What a binding stores for this code: the uuid out of `nem://t/<uuid>`, or
@@ -171,7 +179,7 @@ const scanRepeatWindow = Duration(seconds: 30);
 /// This is the whole resolution flow, and it is deliberately the only part of
 /// scanning that is not a widget: `scan → binding → target → tasks due → what
 /// to do` (PLAN.md — Resolution). #8 passes it an NFC payload and #10 passes it
-/// a product barcode; the only thing that differs is the [ScanCarrier].
+/// a product barcode; the only thing that differs is the [ScanReader].
 ///
 /// It decides and does not act. Completing a task, buzzing the phone, showing a
 /// sheet and offering undo all happen to an outcome, not inside this class.
@@ -189,13 +197,13 @@ class ScanResolver {
   String? _lastTargetId;
   DateTime? _lastAcceptedAt;
 
-  /// Resolves [raw], read off [carrier], as at [now].
+  /// Resolves [raw], read through [reader], as at [now].
   Future<ScanOutcome> resolve(
     String raw, {
-    ScanCarrier carrier = ScanCarrier.camera,
+    ScanReader reader = ScanReader.camera,
     required DateTime now,
   }) async {
-    final code = ScannedCode.parse(raw, carrier);
+    final code = ScannedCode.parse(raw, reader);
     if (code.value.isEmpty) return ScanUnknownCode(code);
 
     final binding = await _lookup.findBinding(code.kind, code.value);

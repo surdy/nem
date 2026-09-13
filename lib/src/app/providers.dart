@@ -1,14 +1,17 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:timezone/timezone.dart' as tz;
 
+import '../data/binding_repository.dart';
 import '../data/database.dart';
 import '../data/digest_settings_repository.dart';
 import '../data/target_repository.dart';
 import '../data/task_repository.dart';
+import '../domain/binding.dart';
 import '../domain/completion.dart';
 import '../domain/completion_history.dart';
 import '../domain/digest.dart';
 import '../domain/due_list.dart';
+import '../domain/scan.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
 import '../notifications/digest_notifier.dart';
@@ -69,6 +72,31 @@ final targetTasksProvider = StreamProvider.family<List<Task>, String>(
       ref.watch(taskRepositoryProvider).watchTasksForTarget(targetId),
 );
 
+final bindingRepositoryProvider = Provider<BindingRepository>(
+  (ref) => BindingRepository(ref.watch(databaseProvider)),
+);
+
+/// The codes bound to one target — its label, and any barcode it has adopted.
+final targetBindingsProvider = StreamProvider.family<List<Binding>, String>(
+  (ref, targetId) =>
+      ref.watch(bindingRepositoryProvider).watchBindingsForTarget(targetId),
+);
+
+/// The scan resolution flow (PLAN.md — Resolution).
+///
+/// One instance for the life of the app, which matters: the thirty-second
+/// repeat window is state it holds, and a resolver rebuilt per scan screen
+/// would forget that the same target was just scanned.
+final scanResolverProvider = Provider<ScanResolver>(
+  (ref) => ScanResolver(
+    RepositoryScanLookup(
+      bindings: ref.watch(bindingRepositoryProvider),
+      targets: ref.watch(targetRepositoryProvider),
+      tasks: ref.watch(taskRepositoryProvider),
+    ),
+  ),
+);
+
 /// One task, live, or null once it is gone.
 final taskProvider = StreamProvider.family<Task?, String>(
   (ref, taskId) => ref.watch(taskRepositoryProvider).watchTask(taskId),
@@ -111,6 +139,10 @@ final taskHistoryProvider = Provider.family<AsyncValue<TaskHistory>, String>((
 /// trailing windows in [taskHistoryProvider] — is counted in calendar days, so
 /// the day is the only granularity at which any of it can change, and a
 /// finer-grained clock would rebuild the list for nothing.
+///
+/// Anything measuring *elapsed* time reads [clockProvider] instead: the scan
+/// flow's repeat window is thirty seconds, and a clock that only moves at
+/// midnight would report every scan as simultaneous.
 ///
 /// Still overridable with a plain value, which is how every test pins it.
 final nowProvider = Provider<DateTime>((ref) {

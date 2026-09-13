@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
+import '../domain/binding.dart';
 import '../domain/due_status.dart';
 import '../domain/target.dart';
 import '../domain/task.dart';
 import 'due_list_screen.dart' show formatDueDate;
 import 'target_form_screen.dart';
+import 'target_label_screen.dart';
 
 /// One target and the work done on it.
 ///
@@ -29,6 +31,7 @@ class TargetDetailScreen extends ConsumerWidget {
             PopupMenuButton<_TargetAction>(
               onSelected: (action) => switch (action) {
                 _TargetAction.rename => _edit(context, target),
+                _TargetAction.label => _showLabel(context, target),
                 _TargetAction.delete => _confirmDelete(context, ref, target),
               },
               itemBuilder: (context) => const [
@@ -36,6 +39,7 @@ class TargetDetailScreen extends ConsumerWidget {
                   value: _TargetAction.rename,
                   child: Text('Rename'),
                 ),
+                PopupMenuItem(value: _TargetAction.label, child: Text('Label')),
                 PopupMenuItem(
                   value: _TargetAction.delete,
                   child: Text('Delete target'),
@@ -53,6 +57,15 @@ class TargetDetailScreen extends ConsumerWidget {
   void _edit(BuildContext context, Target target) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => TargetFormScreen(target: target)),
+    );
+  }
+
+  /// The printable QR label for this target (CONTEXT.md — "Label").
+  void _showLabel(BuildContext context, Target target) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TargetLabelScreen(target: target),
+      ),
     );
   }
 
@@ -89,7 +102,7 @@ class TargetDetailScreen extends ConsumerWidget {
   }
 }
 
-enum _TargetAction { rename, delete }
+enum _TargetAction { rename, label, delete }
 
 class _TargetBody extends ConsumerWidget {
   const _TargetBody({required this.target});
@@ -128,8 +141,61 @@ class _TargetBody extends ConsumerWidget {
             const _Message(text: 'No tasks here yet.')
           else
             for (final task in data) _TaskTile(task: task, now: now),
+          _Codes(targetId: target.id),
         ],
       ),
+    );
+  }
+}
+
+/// The scannable codes bound to this target (CONTEXT.md — "Binding").
+///
+/// Visible so a mis-bound barcode can be taken off again: binding is one tap
+/// from a scan, so unbinding has to be reachable from somewhere.
+class _Codes extends ConsumerWidget {
+  const _Codes({required this.targetId});
+
+  final String targetId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bindings = ref.watch(targetBindingsProvider(targetId)).value;
+    if (bindings == null || bindings.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+          child: Text(
+            'CODES',
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(letterSpacing: 1.2),
+          ),
+        ),
+        for (final binding in bindings)
+          ListTile(
+            key: ValueKey('binding-${binding.id}'),
+            leading: Icon(switch (binding.kind) {
+              BindingKind.tag => Icons.nfc,
+              BindingKind.label => Icons.qr_code_2,
+              BindingKind.barcode => Icons.barcode_reader,
+            }),
+            title: Text(binding.kind.displayLabel),
+            subtitle: Text(
+              binding.kind == BindingKind.label
+                  ? labelUriFor(binding.value)
+                  : binding.value,
+            ),
+            trailing: IconButton(
+              icon: const Icon(Icons.link_off),
+              tooltip: 'Unbind',
+              onPressed: () =>
+                  ref.read(bindingRepositoryProvider).unbind(binding.id),
+            ),
+          ),
+      ],
     );
   }
 }

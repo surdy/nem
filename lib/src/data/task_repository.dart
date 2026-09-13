@@ -99,6 +99,28 @@ class TaskRepository {
     );
   }
 
+  /// Live tasks at one target, read once — what a scan resolves against.
+  ///
+  /// A scan is a single question asked at a single moment, so it takes the
+  /// answer as a future rather than subscribing to [watchTasksForTarget] and
+  /// cancelling immediately. Archived tasks are included here too; deciding
+  /// what is due is the caller's job (`tasksDueAt`), not the query's.
+  Future<List<Task>> tasksForTarget(String targetId) async {
+    final lastCompletedAt = _lastCompletedAtExpression();
+    final rows =
+        await (_db.select(_db.tasks).join([])
+              ..addColumns([lastCompletedAt])
+              ..where(
+                _db.tasks.deletedAt.isNull() &
+                    _db.tasks.targetId.equals(targetId),
+              ))
+            .get();
+    return [
+      for (final row in rows)
+        _toDomain(row.readTable(_db.tasks), row.read(lastCompletedAt)),
+    ];
+  }
+
   /// Creates a task with a floating schedule.
   Future<Task> createFloatingTask({
     required String title,

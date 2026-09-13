@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 
+import '../domain/binding.dart';
 import '../domain/completion.dart';
 import '../domain/interval_unit.dart';
 import '../domain/task.dart';
@@ -128,6 +129,54 @@ class Targets extends Table {
   Set<Column<Object>> get primaryKey => {id};
 }
 
+/// The `bindings` table from PLAN.md.
+///
+/// One scannable code, one target (CONTEXT.md — "Binding"; ADR 0008). The
+/// uniqueness is on `(kind, value)` rather than on `value` alone, because a
+/// target can wear a tag and a printed label at once and both carry the same
+/// `nem://t/<uuid>` — two rows, two kinds, one value, one target.
+@DataClassName('BindingRow')
+@TableIndex(name: 'idx_bindings_target_id', columns: {#targetId})
+@TableIndex(name: 'idx_bindings_deleted_at', columns: {#deletedAt})
+@TableIndex(
+  name: 'idx_bindings_kind_value',
+  columns: {#kind, #value},
+  unique: true,
+)
+class Bindings extends Table {
+  TextColumn get id => text()();
+
+  /// The target this code resolves to.
+  ///
+  /// No SQLite foreign key, for exactly the reasons `tasks.target_id` has none
+  /// (ADR 0011): deletes are soft, so the row it names never actually goes
+  /// away, and a sync pull can legitimately deliver a binding before the target
+  /// it points at — a constraint would reject that pull and leave the device
+  /// unable to converge. A binding whose target does not resolve is handled as
+  /// an unknown code, not as corruption.
+  TextColumn get targetId => text()();
+
+  /// Constrained to the values of [BindingKind], stored by name.
+  TextColumn get kind => textEnum<BindingKind>()();
+
+  /// Our uuid for a tag or a label, the raw product code for a barcode.
+  TextColumn get value => text()();
+
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  /// Soft delete, so a delete beats a stale update when sync arrives (PLAN.md).
+  ///
+  /// A tombstoned row still occupies its `(kind, value)` slot in the unique
+  /// index — deliberately. Re-binding a code that was unbound re-points the row
+  /// that is already there rather than inserting a second one, which is also
+  /// what keeps the other device's copy of that binding converging on one row.
+  DateTimeColumn get deletedAt => dateTime().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
 /// The `sync_state` table from PLAN.md — device-local key/value state.
 ///
 /// Sync itself is P3, but the device id it holds is needed now: every
@@ -140,13 +189,13 @@ class SyncState extends Table {
   Set<Column<Object>> get primaryKey => {key};
 }
 
-@DriftDatabase(tables: [Tasks, Completions, Targets, SyncState])
+@DriftDatabase(tables: [Tasks, Completions, Targets, Bindings, SyncState])
 class NemDatabase extends _$NemDatabase {
   NemDatabase([QueryExecutor? executor])
     : super(executor ?? driftDatabase(name: 'nem'));
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -169,6 +218,15 @@ class NemDatabase extends _$NemDatabase {
       if (from < 3) {
         await m.createTable(targets);
         await m.create(idxTargetsDeletedAt);
+      }
+      // v4 adds `bindings`, so a scanned code can name a target. Nothing else
+      // changes: targets and tasks are untouched, and a device that never
+      // scans anything simply has an empty table.
+      if (from < 4) {
+        await m.createTable(bindings);
+        await m.create(idxBindingsTargetId);
+        await m.create(idxBindingsDeletedAt);
+        await m.create(idxBindingsKindValue);
       }
     },
     beforeOpen: (details) async {

@@ -7,6 +7,7 @@ import '../domain/completion_history.dart';
 import '../domain/due_status.dart';
 import '../domain/reminder.dart';
 import '../domain/task.dart';
+import 'category_chips.dart';
 import 'due_list_screen.dart' show formatDueDate;
 import 'fixed_schedule_editor.dart' show UneditableRule;
 import 'task_actions.dart';
@@ -67,6 +68,7 @@ class _Detail extends ConsumerWidget {
       padding: const EdgeInsets.only(bottom: 32),
       children: [
         _Schedule(task: task, now: now),
+        _CategoriesTile(task: task),
         _ReminderTile(task: task),
         _Summaries(summaries: history.summaries),
         const _Heading('History'),
@@ -150,6 +152,59 @@ class _Schedule extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// Which categories this task is in, and where that is changed (CONTEXT.md —
+/// "Category").
+///
+/// On the task rather than on the category, because the membership is a
+/// property of the work: a task belongs to several categories at once, and this
+/// is the only place all of them are visible together.
+class _CategoriesTile extends ConsumerWidget {
+  const _CategoriesTile({required this.task});
+
+  final Task task;
+
+  Future<void> _edit(
+    BuildContext context,
+    WidgetRef ref,
+    Set<String> selected,
+  ) async {
+    final picked = await showCategorySelector(
+      context: context,
+      selected: selected,
+      title: 'Categories',
+    );
+    if (picked == null) return;
+    await ref
+        .read(categoryRepositoryProvider)
+        .setCategoriesForTask(task.id, picked);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final categories = ref.watch(taskCategoriesProvider(task.id)).value ?? [];
+    final selected = {for (final category in categories) category.id};
+
+    return ListTile(
+      leading: const Icon(Icons.category_outlined),
+      title: const Text('Categories'),
+      subtitle: categories.isEmpty
+          ? const Text('None')
+          : Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  for (final category in categories)
+                    CategoryChip(category: category),
+                ],
+              ),
+            ),
+      onTap: () => _edit(context, ref, selected),
     );
   }
 }

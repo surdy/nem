@@ -3,12 +3,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:timezone/timezone.dart' as tz;
 
 import '../data/binding_repository.dart';
+import '../data/category_filter_repository.dart';
+import '../data/category_repository.dart';
 import '../data/database.dart';
 import '../data/digest_settings_repository.dart';
 import '../data/scan_repeat_repository.dart';
 import '../data/target_repository.dart';
 import '../data/task_repository.dart';
 import '../domain/binding.dart';
+import '../domain/category.dart';
 import '../domain/completion.dart';
 import '../domain/completion_history.dart';
 import '../domain/digest.dart';
@@ -45,10 +48,85 @@ final taskRepositoryProvider = Provider<TaskRepository>(
   (ref) => TaskRepository(ref.watch(databaseProvider)),
 );
 
-/// Every live task, soonest due first.
-final dueListProvider = StreamProvider<List<Task>>(
-  (ref) => ref.watch(taskRepositoryProvider).watchDueList(),
+final categoryRepositoryProvider = Provider<CategoryRepository>(
+  (ref) => CategoryRepository(ref.watch(databaseProvider)),
 );
+
+/// Every live category, alphabetically (CONTEXT.md — "Category").
+final categoryListProvider = StreamProvider<List<Category>>(
+  (ref) => ref.watch(categoryRepositoryProvider).watchCategories(),
+);
+
+/// The live categories one task is in.
+final taskCategoriesProvider = StreamProvider.family<List<Category>, String>(
+  (ref, taskId) =>
+      ref.watch(categoryRepositoryProvider).watchCategoriesForTask(taskId),
+);
+
+final categoryFilterRepositoryProvider = Provider<CategoryFilterRepository>(
+  (ref) => CategoryFilterRepository(ref.watch(databaseProvider)),
+);
+
+/// Which categories the due list is currently filtered to, kept across
+/// launches. Empty means no filter — everything.
+///
+/// Device-local UI state, stored in `sync_state` and never pushed; the argument
+/// for that is in [CategoryFilterRepository].
+///
+/// It watches [categoryListProvider] so that the set can be pruned against the
+/// categories that actually exist. A category deleted here — or on the other
+/// phone, arriving in a pull — must not leave the due list filtered to an id
+/// that names nothing, which would show an empty list with no way to see why.
+/// The pruned set is written back, so the staleness is resolved once rather
+/// than on every read.
+class CategoryFilterStore extends AsyncNotifier<Set<String>> {
+  @override
+  Future<Set<String>> build() async {
+    final repository = ref.watch(categoryFilterRepositoryProvider);
+    final live = {
+      for (final category in await ref.watch(categoryListProvider.future))
+        category.id,
+    };
+    final stored = await repository.read();
+    final pruned = stored.intersection(live);
+    if (pruned.length != stored.length) await repository.write(pruned);
+    return pruned;
+  }
+
+  /// Filters to exactly [categoryIds]; an empty set is no filter at all.
+  Future<void> select(Set<String> categoryIds) async {
+    await ref.read(categoryFilterRepositoryProvider).write(categoryIds);
+    state = AsyncValue.data(categoryIds);
+  }
+
+  /// Adds or removes one category from the filter.
+  Future<void> toggle(String categoryId) async {
+    final next = {...await future};
+    if (!next.remove(categoryId)) next.add(categoryId);
+    await select(next);
+  }
+
+  /// Back to everything.
+  Future<void> clear() => select(const {});
+}
+
+final categoryFilterProvider =
+    AsyncNotifierProvider<CategoryFilterStore, Set<String>>(
+      CategoryFilterStore.new,
+    );
+
+/// Every live task, soonest due first, narrowed to the categories the filter
+/// names.
+///
+/// The filter is awaited rather than read, because it comes off disk: reading
+/// it synchronously would mean showing the unfiltered list for a frame on every
+/// launch, which is the one moment the filter is most surprising to lose.
+final dueListProvider = StreamProvider<List<Task>>((ref) async* {
+  final categoryIds = await ref.watch(categoryFilterProvider.future);
+  yield* ref
+      .watch(taskRepositoryProvider)
+      .watchDueList(categoryIds: categoryIds);
+});
 
 /// Every retired task, most recently archived first.
 ///

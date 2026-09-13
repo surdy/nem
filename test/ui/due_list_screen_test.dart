@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nem/src/app/clock.dart';
 import 'package:nem/src/app/providers.dart';
+import 'package:nem/src/data/category_repository.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/fixed_schedule.dart';
@@ -18,6 +19,7 @@ import '../notifications/fake_reminder_notifier.dart';
 void main() {
   late NemDatabase db;
   late TaskRepository repository;
+  late CategoryRepository categories;
   late FakeReminderNotifier reminders;
   final now = DateTime(2026, 6, 15, 10, 0);
 
@@ -28,6 +30,7 @@ void main() {
   setUp(() {
     db = NemDatabase(NativeDatabase.memory());
     repository = TaskRepository(db);
+    categories = CategoryRepository(db);
     reminders = FakeReminderNotifier();
   });
 
@@ -494,5 +497,185 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('10 days late'), findsOneWidget);
     await unmount(tester);
+  });
+
+  group('filtering by category', () {
+    /// A task in [names], each of which becomes a category.
+    Future<void> createCategorised(
+      String title, {
+      required List<String> names,
+      required int intervalN,
+    }) async {
+      final task = await repository.createFloatingTask(
+        title: title,
+        intervalN: intervalN,
+        intervalUnit: IntervalUnit.day,
+        startDate: DateTime(2026, 6, 1),
+      );
+      final ids = <String>{};
+      for (final name in names) {
+        final existing = (await categories.allCategories())
+            .where((category) => category.name == name)
+            .toList();
+        ids.add(
+          existing.isEmpty
+              ? (await categories.createCategory(name: name)).id
+              : existing.single.id,
+        );
+      }
+      await categories.setCategoriesForTask(task.id, ids);
+    }
+
+    /// Opens the filter sheet, ticks [names], and closes it.
+    Future<void> filterTo(WidgetTester tester, List<String> names) async {
+      await tester.tap(find.byTooltip('Filter by category'));
+      await tester.pumpAndSettle();
+      for (final name in names) {
+        await tester.tap(find.widgetWithText(CheckboxListTile, name));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('narrows the list to one category', (tester) async {
+      await createCategorised(
+        'Replace the water filter',
+        names: ['Kitchen'],
+        intervalN: 4,
+      );
+      await createCategorised('Check the tyres', names: ['Car'], intervalN: 4);
+
+      await pumpDueList(tester);
+      expect(find.text('Replace the water filter'), findsOneWidget);
+      expect(find.text('Check the tyres'), findsOneWidget);
+
+      await filterTo(tester, ['Kitchen']);
+
+      expect(find.text('Replace the water filter'), findsOneWidget);
+      expect(find.text('Check the tyres'), findsNothing);
+      await unmount(tester);
+    });
+
+    testWidgets('two categories mean either, not both', (tester) async {
+      await createCategorised(
+        'Replace the water filter',
+        names: ['Kitchen'],
+        intervalN: 4,
+      );
+      await createCategorised('Check the tyres', names: ['Car'], intervalN: 4);
+      await createCategorised(
+        'Do the accounts',
+        names: ['Admin'],
+        intervalN: 4,
+      );
+
+      await pumpDueList(tester);
+      await filterTo(tester, ['Car', 'Kitchen']);
+
+      expect(find.text('Replace the water filter'), findsOneWidget);
+      expect(find.text('Check the tyres'), findsOneWidget);
+      expect(find.text('Do the accounts'), findsNothing);
+      await unmount(tester);
+    });
+
+    testWidgets('a task in several categories is shown once', (tester) async {
+      await createCategorised(
+        'Replace the water filter',
+        names: ['Kitchen', 'Annual'],
+        intervalN: 4,
+      );
+
+      await pumpDueList(tester);
+      await filterTo(tester, ['Annual', 'Kitchen']);
+
+      expect(find.text('Replace the water filter'), findsOneWidget);
+      expect(find.byType(ListTile), findsOneWidget);
+      await unmount(tester);
+    });
+
+    testWidgets('says the list is filtered rather than empty', (tester) async {
+      await createCategorised('Check the tyres', names: ['Car'], intervalN: 4);
+      await categories.createCategory(name: 'Kitchen');
+
+      await pumpDueList(tester);
+      await filterTo(tester, ['Kitchen']);
+
+      expect(find.textContaining('Nothing due in Kitchen'), findsOneWidget);
+      expect(find.textContaining('Nothing due.'), findsNothing);
+      await unmount(tester);
+    });
+
+    testWidgets('the filter can be cleared from the strip that shows it', (
+      tester,
+    ) async {
+      await createCategorised(
+        'Replace the water filter',
+        names: ['Kitchen'],
+        intervalN: 4,
+      );
+      await createCategorised('Check the tyres', names: ['Car'], intervalN: 4);
+
+      await pumpDueList(tester);
+      await filterTo(tester, ['Kitchen']);
+      expect(find.text('Check the tyres'), findsNothing);
+
+      await tester.tap(find.text('Clear'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Check the tyres'), findsOneWidget);
+      expect(find.text('Clear'), findsNothing);
+      await unmount(tester);
+    });
+
+    testWidgets('the filter survives a relaunch', (tester) async {
+      await createCategorised(
+        'Replace the water filter',
+        names: ['Kitchen'],
+        intervalN: 4,
+      );
+      await createCategorised('Check the tyres', names: ['Car'], intervalN: 4);
+
+      await pumpDueList(tester);
+      await filterTo(tester, ['Kitchen']);
+      expect(find.text('Check the tyres'), findsNothing);
+
+      // The app goes away and comes back: a new widget tree and a new
+      // ProviderScope over the same database, which is what a relaunch is.
+      await unmount(tester);
+      await pumpDueList(tester);
+
+      expect(find.text('Replace the water filter'), findsOneWidget);
+      expect(find.text('Check the tyres'), findsNothing);
+      await unmount(tester);
+    });
+
+    testWidgets('deleting the category being filtered by puts the whole list '
+        'back', (tester) async {
+      await createCategorised(
+        'Replace the water filter',
+        names: ['Kitchen'],
+        intervalN: 4,
+      );
+      await createCategorised('Check the tyres', names: ['Car'], intervalN: 4);
+
+      await pumpDueList(tester);
+      await filterTo(tester, ['Kitchen']);
+      expect(find.text('Check the tyres'), findsNothing);
+
+      // As a pull from the other device would, or a delete in Settings.
+      final kitchen = (await categories.allCategories()).firstWhere(
+        (category) => category.name == 'Kitchen',
+      );
+      await categories.softDeleteCategory(kitchen.id);
+      await tester.pumpAndSettle();
+
+      // Filtered to a category that no longer exists would be an empty list
+      // with nothing on screen to explain it.
+      expect(find.text('Replace the water filter'), findsOneWidget);
+      expect(find.text('Check the tyres'), findsOneWidget);
+      expect(find.text('Clear'), findsNothing);
+      await unmount(tester);
+    });
   });
 }

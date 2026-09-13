@@ -239,12 +239,113 @@ class Bindings extends Table {
   Set<Column<Object>> get primaryKey => {id};
 }
 
+/// The `categories` table from PLAN.md.
+///
+/// A category is a user-defined grouping that cuts across targets — kitchen,
+/// car, admin (CONTEXT.md — "Category"). It is emphatically not a tag: that
+/// word is reserved for NFC hardware, which is why the glossary gives the
+/// grouping a word of its own.
+///
+/// A category groups *tasks*, not targets, and a task can be in several at
+/// once — so the membership lives in [TaskCategories] rather than in a column
+/// here or on `tasks`.
+@DataClassName('CategoryRow')
+@TableIndex(name: 'idx_categories_deleted_at', columns: {#deletedAt})
+class Categories extends Table {
+  TextColumn get id => text()();
+
+  /// What the grouping is called — "kitchen", "the car", "admin".
+  TextColumn get name => text()();
+
+  /// The swatch the category is shown in, as a 32-bit ARGB value, or null when
+  /// one was never chosen.
+  ///
+  /// Nullable rather than defaulted, so "no colour yet" is a state the row can
+  /// hold honestly: a category pulled from a device running an older build has
+  /// no opinion about its colour, and a default written here would look like
+  /// one. The UI falls back to a neutral swatch.
+  IntColumn get color => integer().nullable()();
+
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  /// Soft delete, so a delete beats a stale update when sync arrives (PLAN.md).
+  ///
+  /// Deleting a category deletes no work: the tasks that were in it are
+  /// untouched, exactly as soft-deleting a target leaves its tasks intact.
+  /// What goes with it is the membership rows, tombstoned in the same
+  /// transaction — see `CategoryRepository.softDeleteCategory`.
+  DateTimeColumn get deletedAt => dateTime().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+/// The `task_categories` table from PLAN.md — one task's membership of one
+/// category.
+///
+/// ## Why this has an `id` when PLAN.md's block gives it a composite key
+///
+/// Because it syncs, and everything sync moves is addressed by a single `id`:
+/// the outbox names `(table, row_id)`, the drain reads `WHERE id = ?`, the pull
+/// cursor is an `(updated_at, id)` pair and last-write-wins compares one row
+/// against one row. A composite key would have meant a second addressing scheme
+/// through every one of those, which is precisely the "second sync path" that
+/// registering a [SyncedTable] exists to avoid. The pair stays unique — a
+/// unique index rather than a primary key — so a membership added twice is one
+/// row, not two.
+///
+/// The timestamps are here for the same reason: `created_at` is what the seed
+/// walks in order, `updated_at` is the clock sync measures the row on, and
+/// `deleted_at` is how a membership is taken back.
+@DataClassName('TaskCategoryRow')
+@TableIndex(name: 'idx_task_categories_task_id', columns: {#taskId})
+@TableIndex(name: 'idx_task_categories_category_id', columns: {#categoryId})
+@TableIndex(name: 'idx_task_categories_deleted_at', columns: {#deletedAt})
+@TableIndex(
+  name: 'idx_task_categories_pair',
+  columns: {#taskId, #categoryId},
+  unique: true,
+)
+class TaskCategories extends Table {
+  TextColumn get id => text()();
+
+  /// The task that is in the category.
+  ///
+  /// No SQLite foreign key, and neither does [categoryId] — ADR 0011, and this
+  /// table is where its argument bites hardest. A membership row references
+  /// *both* sides, sync pulls tables in no guaranteed order, and so a
+  /// membership can legitimately arrive before either the task or the category
+  /// it names. Two constraints would mean two ways for a perfectly valid pull
+  /// to be refused, leaving the device unable to converge. A membership whose
+  /// task or category does not resolve is simply not shown, which is what every
+  /// read here already does by joining rather than trusting.
+  TextColumn get taskId => text()();
+
+  /// The category the task is in.
+  TextColumn get categoryId => text()();
+
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  /// Soft delete, so a delete beats a stale update when sync arrives (PLAN.md).
+  ///
+  /// Taking a task out of a category tombstones this row rather than deleting
+  /// it, and putting it back re-points the row that is already there — the same
+  /// bargain [Bindings] strikes with its unique index, and for the same reason:
+  /// a hard delete would give the other device a row to resurrect.
+  DateTimeColumn get deletedAt => dateTime().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
 /// The `sync_state` table from PLAN.md — device-local key/value state.
 ///
 /// Holds the device id every completion records, the digest's configuration,
-/// the Supabase base URL and anon key (ADR 0002), and the per-table pull
-/// cursors. Never pushed: sync moves rows of the domain tables, and this is
-/// not one of them.
+/// which categories the due list is filtered to, the Supabase base URL and anon
+/// key (ADR 0002), and the per-table pull cursors. Never pushed: sync moves
+/// rows of the domain tables, and this is not one of them.
 class SyncState extends Table {
   TextColumn get key => text()();
   TextColumn get value => text()();
@@ -271,7 +372,7 @@ class SyncState extends Table {
 @DataClassName('OutboxRow')
 @TableIndex(name: 'idx_outbox_enqueued_at', columns: {#enqueuedAt})
 class Outbox extends Table {
-  /// The SQL name of the table the row lives in — one of the four in
+  /// The SQL name of the table the row lives in — one of the six in
   /// `defaultSyncedTables`. Named explicitly because drift's `Table` already
   /// owns the `tableName` getter.
   TextColumn get pendingTable => text().named('table_name')();
@@ -292,14 +393,23 @@ class Outbox extends Table {
 }
 
 @DriftDatabase(
-  tables: [Tasks, Completions, Targets, Bindings, SyncState, Outbox],
+  tables: [
+    Tasks,
+    Completions,
+    Targets,
+    Bindings,
+    Categories,
+    TaskCategories,
+    SyncState,
+    Outbox,
+  ],
 )
 class NemDatabase extends _$NemDatabase {
   NemDatabase([QueryExecutor? executor])
     : super(executor ?? driftDatabase(name: 'nem'));
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -379,6 +489,23 @@ class NemDatabase extends _$NemDatabase {
             },
           ),
         );
+      }
+      // v8 adds categories and the membership join table (#14). Two new
+      // tables and nothing else: `tasks` is untouched, because a task's
+      // categories are rows over there rather than a column here — which is
+      // what lets a task be in several at once.
+      //
+      // A device upgrading into this build has no categories, so both tables
+      // start empty and every existing task reads as uncategorised. Nothing is
+      // queued for push by the upgrade itself, for the reason v6 gives.
+      if (from < 8) {
+        await m.createTable(categories);
+        await m.create(idxCategoriesDeletedAt);
+        await m.createTable(taskCategories);
+        await m.create(idxTaskCategoriesTaskId);
+        await m.create(idxTaskCategoriesCategoryId);
+        await m.create(idxTaskCategoriesDeletedAt);
+        await m.create(idxTaskCategoriesPair);
       }
     },
     beforeOpen: (details) async {

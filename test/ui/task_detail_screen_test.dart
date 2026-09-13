@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nem/src/app/providers.dart';
+import 'package:nem/src/data/category_repository.dart';
 import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/fixed_schedule.dart';
@@ -19,6 +20,7 @@ import '../notifications/fake_reminder_notifier.dart';
 void main() {
   late NemDatabase db;
   late TaskRepository repository;
+  late CategoryRepository categories;
   late FakeReminderNotifier notifier;
   final now = DateTime(2026, 7, 10, 12);
 
@@ -28,6 +30,7 @@ void main() {
   setUp(() {
     db = NemDatabase(NativeDatabase.memory());
     repository = TaskRepository(db);
+    categories = CategoryRepository(db);
     notifier = FakeReminderNotifier();
   });
 
@@ -474,6 +477,63 @@ void main() {
 
       expect(await storedReminderTime(taskId), '09:00');
       expect(notifier.scheduled, isNotEmpty);
+      await unmount(tester);
+    });
+  });
+
+  group('categories', () {
+    testWidgets('a task in no category says so', (tester) async {
+      await pumpDetail(tester, await weeklyTaskId());
+
+      expect(find.text('Categories'), findsOneWidget);
+      expect(find.text('None'), findsOneWidget);
+      await unmount(tester);
+    });
+
+    testWidgets('a task is put in several categories at once', (tester) async {
+      final taskId = await weeklyTaskId();
+      await categories.createCategory(name: 'Kitchen');
+      await categories.createCategory(name: 'Annual');
+
+      await pumpDetail(tester, taskId);
+      await tester.tap(find.text('None'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(CheckboxListTile, 'Kitchen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(CheckboxListTile, 'Annual'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+
+      expect((await categories.categoriesForTask(taskId)).map((c) => c.name), [
+        'Annual',
+        'Kitchen',
+      ]);
+      // Both chips are on the task, because a task is in several categories
+      // rather than one.
+      expect(find.widgetWithText(Chip, 'Kitchen'), findsOneWidget);
+      expect(find.widgetWithText(Chip, 'Annual'), findsOneWidget);
+      await unmount(tester);
+    });
+
+    testWidgets('a task is taken back out of one', (tester) async {
+      final taskId = await weeklyTaskId();
+      final kitchen = await categories.createCategory(name: 'Kitchen');
+      await categories.setCategoriesForTask(taskId, {kitchen.id});
+
+      await pumpDetail(tester, taskId);
+      expect(find.widgetWithText(Chip, 'Kitchen'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(Chip, 'Kitchen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(CheckboxListTile, 'Kitchen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+
+      expect(await categories.categoriesForTask(taskId), isEmpty);
+      expect(find.text('None'), findsOneWidget);
       await unmount(tester);
     });
   });

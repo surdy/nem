@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../app/providers.dart';
 import '../domain/digest.dart';
 import '../notifications/digest_notifier.dart';
+import 'category_list_screen.dart';
 import 'sync_settings_section.dart';
 
 /// Where the digest is switched on and given a time (CONTEXT.md — "Digest"),
@@ -134,6 +135,20 @@ class _DigestSettingsList extends ConsumerWidget {
           trailing: const Icon(Icons.schedule),
         ),
         if (isBlocked) const _PermissionNotice(),
+        const _SectionHeading(text: 'ORGANISATION'),
+        ListTile(
+          leading: const Icon(Icons.category_outlined),
+          title: const Text('Categories'),
+          // Says what a category is for, because the word on its own could be
+          // read as a property of a target rather than a lens across them.
+          subtitle: const Text(
+            'Group work across targets, and filter the due list by it.',
+          ),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const CategoryListScreen()),
+          ),
+        ),
         const SyncSettingsSection(),
       ],
     );

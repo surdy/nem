@@ -141,14 +141,16 @@ class TaskRepository {
   Future<Task> createFixedTask({
     required String title,
     String? notes,
+    String? targetId,
     required FixedSchedule schedule,
     DateTime? now,
   }) async {
     final timestamp = now ?? DateTime.now();
     final task = Task(
-      id: _newId(),
+      id: newId(),
       title: title,
       notes: (notes == null || notes.trim().isEmpty) ? null : notes.trim(),
+      targetId: targetId,
       scheduleMode: ScheduleMode.fixed,
       rrule: schedule.encode(),
       fixedSchedule: schedule,
@@ -164,6 +166,7 @@ class TaskRepository {
             id: task.id,
             title: task.title,
             notes: Value(task.notes),
+            targetId: Value(task.targetId),
             scheduleMode: ScheduleMode.fixed,
             rrule: Value(task.rrule),
             startDate: task.startDate,

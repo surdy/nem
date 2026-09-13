@@ -119,7 +119,7 @@ class _TaskTile extends ConsumerWidget {
     final theme = Theme.of(context);
     final due = task.dueDate;
     final late = due == null ? null : overdueLabel(due, now);
-    final schedule = task.floatingSchedule;
+    final schedule = task.scheduleLabel;
 
     return ListTile(
       leading: IconButton(
@@ -131,7 +131,7 @@ class _TaskTile extends ConsumerWidget {
       subtitle: Text(
         [
           if (due != null) 'Due ${formatDueDate(due)}',
-          if (schedule != null) schedule.label.toLowerCase(),
+          if (schedule != null) schedule.toLowerCase(),
         ].join(' · '),
       ),
       trailing: late == null

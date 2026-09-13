@@ -5,6 +5,7 @@ import '../domain/binding.dart';
 import '../domain/completion.dart';
 import '../domain/interval_unit.dart';
 import '../domain/task.dart';
+import '../photos/photo.dart';
 
 part 'database.g.dart';
 
@@ -340,6 +341,82 @@ class TaskCategories extends Table {
   Set<Column<Object>> get primaryKey => {id};
 }
 
+/// The `photos` table from PLAN.md — reference photos on tasks (CONTEXT.md).
+///
+/// Column for column what PLAN.md's schema block specifies. The argument for
+/// the two nullable path columns — which one syncs, which one does not, and why
+/// neither is written before it is true — is on [Photo] in `photos/photo.dart`.
+@DataClassName('PhotoRow')
+@TableIndex(name: 'idx_photos_task_id', columns: {#taskId})
+@TableIndex(name: 'idx_photos_deleted_at', columns: {#deletedAt})
+class Photos extends Table {
+  TextColumn get id => text()();
+
+  /// The task this photo is attached to — never a completion (CONTEXT.md).
+  ///
+  /// No foreign key, for exactly ADR 0011's reason: a pull delivers rows per
+  /// table in no guaranteed order, so a photo can arrive before its task, and
+  /// `PRAGMA foreign_keys = ON` would refuse the insert outright.
+  TextColumn get taskId => text()();
+
+  /// The object key in the Storage bucket, or null until an upload has
+  /// actually succeeded. Non-null is a promise that the bytes are there.
+  TextColumn get storagePath => text().nullable()();
+
+  /// The cache file's name on this device, or null when the bytes are not
+  /// here. The one column of this table sync never carries — see
+  /// `SyncedTable.deviceLocalColumns`.
+  TextColumn get localPath => text().nullable()();
+
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  /// Soft delete, so a delete beats a stale update when sync arrives (PLAN.md).
+  DateTimeColumn get deletedAt => dateTime().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+/// The byte work waiting for a network — uploads, downloads and removals.
+///
+/// A second queue next to the outbox, deliberately. The outbox is a *dirty set
+/// of rows*: an entry names a row and the drain reads that row's current state
+/// out of SQLite, which is exactly right for a task and exactly wrong for an
+/// image. Bytes are not re-read from the row, they are immutable once written,
+/// they are a thousand times larger, they fail differently (a half-uploaded
+/// object, a 404 for one that has not arrived yet), and they need an operation
+/// on the entry because "push this row" is one verb while "put these bytes",
+/// "fetch these bytes" and "delete these bytes" are three.
+///
+/// Device-local and never itself synced, for the same reason the outbox is not:
+/// what this phone still owes the bucket is nobody else's business.
+///
+/// The primary key is the photo id alone, so a photo has at most one piece of
+/// outstanding byte work. Deleting a photo whose upload never went out replaces
+/// that upload with a removal rather than queueing both.
+@DataClassName('PhotoTransferRow')
+@TableIndex(name: 'idx_photo_transfers_enqueued_at', columns: {#enqueuedAt})
+class PhotoTransfers extends Table {
+  TextColumn get photoId => text()();
+
+  /// Which way the bytes go — see [PhotoTransferOperation].
+  TextColumn get operation => textEnum<PhotoTransferOperation>()();
+
+  DateTimeColumn get enqueuedAt => dateTime()();
+
+  /// How many drains have tried and failed on this photo.
+  IntColumn get attempts => integer().withDefault(const Constant(0))();
+
+  /// The last failure's message. Surfaced on the task screen, which is what
+  /// makes a failed upload something you are told about rather than something
+  /// that quietly did not happen.
+  TextColumn get lastError => text().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {photoId};
+}
+
 /// The `sync_state` table from PLAN.md — device-local key/value state.
 ///
 /// Holds the device id every completion records, the digest's configuration,
@@ -400,8 +477,10 @@ class Outbox extends Table {
     Bindings,
     Categories,
     TaskCategories,
+    Photos,
     SyncState,
     Outbox,
+    PhotoTransfers,
   ],
 )
 class NemDatabase extends _$NemDatabase {
@@ -409,7 +488,7 @@ class NemDatabase extends _$NemDatabase {
     : super(executor ?? driftDatabase(name: 'nem'));
 
   @override
-  int get schemaVersion => 8;
+  int get schemaVersion => 9;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -506,6 +585,24 @@ class NemDatabase extends _$NemDatabase {
         await m.create(idxTaskCategoriesCategoryId);
         await m.create(idxTaskCategoriesDeletedAt);
         await m.create(idxTaskCategoriesPair);
+      }
+      // v9 adds reference photos (#15): the `photos` rows, which sync, and the
+      // `photo_transfers` queue, which does not. Nothing on any existing table
+      // changes and both start empty — a device upgrading into this build has
+      // no photos, and one that never attaches a photo carries two empty
+      // tables and nothing else.
+      //
+      // There is no backfill to do and none that could be done: bytes are not
+      // rows, and a migration cannot invent an image. A photo row that arrives
+      // from the other device with no bytes here queues its own download on the
+      // next sync (`PhotoRepository.reconcile`), which is the same path a
+      // freshly installed second phone takes.
+      if (from < 9) {
+        await m.createTable(photos);
+        await m.create(idxPhotosTaskId);
+        await m.create(idxPhotosDeletedAt);
+        await m.createTable(photoTransfers);
+        await m.create(idxPhotoTransfersEnqueuedAt);
       }
     },
     beforeOpen: (details) async {

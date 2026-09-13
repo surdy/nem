@@ -1,6 +1,7 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nem/src/data/database.dart';
+import 'package:nem/src/data/target_repository.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/domain/task.dart';
@@ -16,8 +17,8 @@ void main() {
 
   tearDown(() => db.close());
 
-  test('the schema is created at version 2', () async {
-    expect(db.schemaVersion, 2);
+  test('the schema is created at version 3', () async {
+    expect(db.schemaVersion, 3);
     expect(await repository.allTasks(), isEmpty);
   });
 
@@ -42,6 +43,48 @@ void main() {
     expect(stored.lastCompletedAt, isNull);
     expect(stored.rrule, isNull);
     expect(stored.dueDate, DateTime(2026, 4, 15));
+    expect(stored.targetId, isNull, reason: 'a target is optional');
+  });
+
+  test('a task can be created at a target', () async {
+    final target = await TargetRepository(db).createTarget(name: 'The boiler');
+    final task = await repository.createFloatingTask(
+      title: 'Service the boiler',
+      targetId: target.id,
+      intervalN: 1,
+      intervalUnit: IntervalUnit.year,
+      startDate: DateTime(2026, 2, 1),
+    );
+
+    expect(task.targetId, target.id);
+    expect((await repository.allTasks()).single.targetId, target.id);
+  });
+
+  test('the tasks at a target are ordered by due date', () async {
+    final target = await TargetRepository(db).createTarget(name: 'The boiler');
+    await repository.createFloatingTask(
+      title: 'Later',
+      targetId: target.id,
+      intervalN: 1,
+      intervalUnit: IntervalUnit.year,
+      startDate: DateTime(2026, 1, 1),
+    );
+    await repository.createFloatingTask(
+      title: 'Sooner',
+      targetId: target.id,
+      intervalN: 1,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 1, 1),
+    );
+    await repository.createFloatingTask(
+      title: 'Somewhere else',
+      intervalN: 1,
+      intervalUnit: IntervalUnit.day,
+      startDate: DateTime(2026, 1, 1),
+    );
+
+    final atTarget = await repository.watchTasksForTarget(target.id).first;
+    expect(atTarget.map((t) => t.title), ['Sooner', 'Later']);
   });
 
   test('blank notes are stored as null', () async {

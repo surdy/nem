@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nem/src/app/providers.dart';
 import 'package:nem/src/data/database.dart';
+import 'package:nem/src/data/target_repository.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/ui/create_task_screen.dart';
@@ -24,6 +25,14 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// Unmounts the tree and drains the zero-duration timer drift schedules when
+  /// the target query stream is cancelled, so the test does not end with a
+  /// pending timer.
+  Future<void> unmount(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(Duration.zero);
+  }
+
   testWidgets('requires a title', (tester) async {
     await pumpForm(tester);
     await tester.tap(find.text('Create task'));
@@ -31,6 +40,7 @@ void main() {
 
     expect(find.text('Give the task a title'), findsOneWidget);
     expect(await TaskRepository(db).allTasks(), isEmpty);
+    await unmount(tester);
   });
 
   testWidgets('rejects an interval below 1', (tester) async {
@@ -43,6 +53,7 @@ void main() {
 
     expect(find.text('At least 1'), findsOneWidget);
     expect(await TaskRepository(db).allTasks(), isEmpty);
+    await unmount(tester);
   });
 
   testWidgets('creates a floating task with title, notes and interval', (
@@ -65,10 +76,50 @@ void main() {
     expect(task.floatingSchedule?.intervalN, 3);
     expect(task.floatingSchedule?.intervalUnit, IntervalUnit.day);
     expect(task.dueDate, task.startDate.add(const Duration(days: 3)));
+    expect(task.targetId, isNull);
+    await unmount(tester);
   });
 
   testWidgets('previews the derived first due date', (tester) async {
     await pumpForm(tester);
     expect(find.text('First due'), findsOneWidget);
+    await unmount(tester);
+  });
+
+  testWidgets('offers no target field until a target exists', (tester) async {
+    await pumpForm(tester);
+    expect(find.text('Target (optional)'), findsNothing);
+    await unmount(tester);
+  });
+
+  testWidgets('attaches the task to the chosen target', (tester) async {
+    final target = await TargetRepository(db).createTarget(name: 'The boiler');
+
+    await pumpForm(tester);
+    await tester.enterText(
+      find.byType(TextFormField).first,
+      'Service the boiler',
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('No target'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('The boiler').last);
+    await tester.pumpAndSettle();
+
+    // The target field pushes the button past the bottom of a 600px test
+    // viewport, and a ListView does not build what it cannot show.
+    await tester.dragUntilVisible(
+      find.text('Create task'),
+      find.byType(ListView),
+      const Offset(0, -100),
+    );
+    await tester.tap(find.text('Create task'));
+    await tester.pumpAndSettle();
+
+    final task = (await TaskRepository(db).allTasks()).single;
+    expect(task.title, 'Service the boiler');
+    expect(task.targetId, target.id);
+    await unmount(tester);
   });
 }

@@ -1,5 +1,3 @@
-import 'dart:math';
-
 import 'package:drift/drift.dart';
 
 import '../domain/completion.dart';
@@ -7,6 +5,7 @@ import '../domain/interval_unit.dart';
 import '../domain/schedule.dart';
 import '../domain/task.dart';
 import 'database.dart';
+import 'ids.dart';
 
 /// The `sync_state` key this device's identifier is stored under.
 const _deviceIdKey = 'device_id';
@@ -58,10 +57,34 @@ class TaskRepository {
     ];
   }
 
+  /// Live tasks at one target, soonest due first.
+  ///
+  /// Archived tasks are included: a target's detail screen is the answer to
+  /// "what is tracked here", not "what is due here".
+  Stream<List<Task>> watchTasksForTarget(String targetId) {
+    final lastCompletedAt = _lastCompletedAtExpression();
+    final query = _db.select(_db.tasks).join([])
+      ..addColumns([lastCompletedAt])
+      ..where(
+        _db.tasks.deletedAt.isNull() & _db.tasks.targetId.equals(targetId),
+      )
+      ..orderBy([
+        OrderingTerm(expression: _db.tasks.dueDate),
+        OrderingTerm(expression: _db.tasks.title),
+      ]);
+    return query.watch().map(
+      (rows) => [
+        for (final row in rows)
+          _toDomain(row.readTable(_db.tasks), row.read(lastCompletedAt)),
+      ],
+    );
+  }
+
   /// Creates a task with a floating schedule.
   Future<Task> createFloatingTask({
     required String title,
     String? notes,
+    String? targetId,
     required int intervalN,
     required IntervalUnit intervalUnit,
     required DateTime startDate,
@@ -74,9 +97,10 @@ class TaskRepository {
       startDate: startDate,
     );
     final task = Task(
-      id: _newId(),
+      id: newId(),
       title: title,
       notes: (notes == null || notes.trim().isEmpty) ? null : notes.trim(),
+      targetId: targetId,
       scheduleMode: ScheduleMode.floating,
       floatingSchedule: schedule,
       startDate: startDate,
@@ -91,6 +115,7 @@ class TaskRepository {
             id: task.id,
             title: task.title,
             notes: Value(task.notes),
+            targetId: Value(task.targetId),
             scheduleMode: ScheduleMode.floating,
             intervalN: Value(intervalN),
             intervalUnit: Value(intervalUnit),
@@ -123,7 +148,7 @@ class TaskRepository {
     final timestamp = now ?? DateTime.now();
     final trimmed = note?.trim();
     final completion = Completion(
-      id: _newId(),
+      id: newId(),
       taskId: taskId,
       completedAt: completedAt ?? timestamp,
       source: source,
@@ -226,7 +251,7 @@ class TaskRepository {
     await _db
         .into(_db.syncState)
         .insert(
-          SyncStateCompanion.insert(key: _deviceIdKey, value: _newId()),
+          SyncStateCompanion.insert(key: _deviceIdKey, value: newId()),
           // Whoever inserted first wins; a concurrent caller reads that value
           // back rather than overwriting it.
           mode: InsertMode.insertOrIgnore,
@@ -354,18 +379,4 @@ class TaskRepository {
     createdAt: row.createdAt,
     deletedAt: row.deletedAt,
   );
-}
-
-final _random = Random.secure();
-
-/// A RFC 4122 version 4 identifier.
-String _newId() {
-  final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  String hex(int start, int end) => bytes
-      .sublist(start, end)
-      .map((b) => b.toRadixString(16).padLeft(2, '0'))
-      .join();
-  return '${hex(0, 4)}-${hex(4, 6)}-${hex(6, 8)}-${hex(8, 10)}-${hex(10, 16)}';
 }

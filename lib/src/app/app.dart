@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../ui/due_list_screen.dart';
+import '../ui/home_shell.dart';
 
 class NemApp extends StatelessWidget {
   const NemApp({super.key});
@@ -20,7 +20,7 @@ class NemApp extends StatelessWidget {
         brightness: Brightness.dark,
         useMaterial3: true,
       ),
-      home: const DueListScreen(),
+      home: const HomeShell(),
     );
   }
 }

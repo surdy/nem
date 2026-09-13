@@ -20,7 +20,13 @@ class Tasks extends Table {
   TextColumn get title => text()();
   TextColumn get notes => text().nullable()();
 
-  /// Targets arrive in P2; no foreign key yet because the table does not exist.
+  /// The target this task is done on (ADR 0008). Optional — plenty of work is
+  /// not attached to anything physical.
+  ///
+  /// No SQLite foreign key. Deletes are soft, so a referenced target row never
+  /// actually disappears, and once sync arrives a pull can legitimately deliver
+  /// a task before the target it names (PLAN.md — Sync). A constraint would
+  /// reject that ordering; the repository keeps the reference honest instead.
   TextColumn get targetId => text().nullable()();
 
   TextColumn get scheduleMode => textEnum<ScheduleMode>()();
@@ -95,6 +101,28 @@ class Completions extends Table {
   Set<Column<Object>> get primaryKey => {id};
 }
 
+/// The `targets` table from PLAN.md.
+///
+/// A target is a physical place or object work is done on (CONTEXT.md). Tasks
+/// point at it through `tasks.target_id`, and bindings will point at it from the
+/// other side in P2 (ADR 0008).
+@DataClassName('TargetRow')
+@TableIndex(name: 'idx_targets_deleted_at', columns: {#deletedAt})
+class Targets extends Table {
+  TextColumn get id => text()();
+  TextColumn get name => text()();
+  TextColumn get description => text().nullable()();
+
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  /// Soft delete, so a delete beats a stale update when sync arrives (PLAN.md).
+  DateTimeColumn get deletedAt => dateTime().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
 /// The `sync_state` table from PLAN.md — device-local key/value state.
 ///
 /// Sync itself is P3, but the device id it holds is needed now: every
@@ -107,13 +135,13 @@ class SyncState extends Table {
   Set<Column<Object>> get primaryKey => {key};
 }
 
-@DriftDatabase(tables: [Tasks, Completions, SyncState])
+@DriftDatabase(tables: [Tasks, Completions, Targets, SyncState])
 class NemDatabase extends _$NemDatabase {
   NemDatabase([QueryExecutor? executor])
     : super(executor ?? driftDatabase(name: 'nem'));
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -130,6 +158,12 @@ class NemDatabase extends _$NemDatabase {
         await m.createTable(syncState);
         await m.create(idxCompletionsTaskId);
         await m.create(idxCompletionsDeletedAt);
+      }
+      // v3 adds `targets`. `tasks.target_id` has been declared since v1, so
+      // nothing on `tasks` changes — the column simply starts being used.
+      if (from < 3) {
+        await m.createTable(targets);
+        await m.create(idxTargetsDeletedAt);
       }
     },
     beforeOpen: (details) async {

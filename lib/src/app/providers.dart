@@ -1,8 +1,10 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database.dart';
+import '../data/target_repository.dart';
 import '../data/task_repository.dart';
 import '../domain/due_list.dart';
+import '../domain/target.dart';
 import '../domain/task.dart';
 
 /// Manual providers throughout — Riverpod 3 recommends `@riverpod` codegen only
@@ -35,6 +37,27 @@ final dueSectionsProvider = Provider<AsyncValue<List<DueSection>>>((ref) {
       .watch(dueListProvider)
       .whenData((tasks) => groupByDueStatus(tasks, now));
 });
+
+final targetRepositoryProvider = Provider<TargetRepository>(
+  (ref) => TargetRepository(ref.watch(databaseProvider)),
+);
+
+/// Every live target, alphabetically.
+final targetListProvider = StreamProvider<List<Target>>(
+  (ref) => ref.watch(targetRepositoryProvider).watchTargets(),
+);
+
+/// One target, or null once it has been deleted — which is how the detail
+/// screen learns to close itself.
+final targetProvider = StreamProvider.family<Target?, String>(
+  (ref, id) => ref.watch(targetRepositoryProvider).watchTarget(id),
+);
+
+/// The tasks at one target, soonest due first.
+final targetTasksProvider = StreamProvider.family<List<Task>, String>(
+  (ref, targetId) =>
+      ref.watch(taskRepositoryProvider).watchTasksForTarget(targetId),
+);
 
 /// The current moment, overridable in tests.
 final nowProvider = Provider<DateTime>((ref) => DateTime.now());

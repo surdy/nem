@@ -16,8 +16,8 @@ void main() {
 
   tearDown(() => db.close());
 
-  test('the schema is created at version 1', () async {
-    expect(db.schemaVersion, 1);
+  test('the schema is created at version 2', () async {
+    expect(db.schemaVersion, 2);
     expect(await repository.allTasks(), isEmpty);
   });
 
@@ -89,7 +89,7 @@ void main() {
   });
 
   test(
-    'recomputeDueDates repairs a stale cache without touching truth',
+    'recomputeDerivedState repairs a stale cache without touching truth',
     () async {
       final task = await repository.createFloatingTask(
         title: 'Service the boiler',
@@ -109,12 +109,12 @@ void main() {
         DateTime(2027, 2, 1),
       );
 
-      expect(await repository.recomputeDueDates(), 1);
+      expect(await repository.recomputeDerivedState(), 1);
       final row = await db.select(db.tasks).getSingle();
       expect(row.dueDate, DateTime(2027, 2, 1));
 
       // A second run has nothing left to fix.
-      expect(await repository.recomputeDueDates(), 0);
+      expect(await repository.recomputeDerivedState(), 0);
     },
   );
 }

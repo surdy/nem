@@ -104,7 +104,7 @@ task_categories(                  -- a membership; see ADR 0011 on the absent FK
 )
 
 completions(                      -- append-only, see ADR 0004
-  id uuid pk, task_id uuid fk,
+  id uuid pk, task_id uuid,        -- deliberately no FK, see ADR 0011
   completed_at timestamptz,
   source text check (source in ('manual','tag','label','barcode')),
   note text null,
@@ -113,9 +113,9 @@ completions(                      -- append-only, see ADR 0004
 )
 
 photos(
-  id uuid pk, task_id uuid fk,
-  storage_path text null,         -- Supabase Storage key
-  local_path text null,           -- on-device cache
+  id uuid pk, task_id uuid,        -- deliberately no FK, see ADR 0011
+  storage_path text null,         -- Supabase Storage key; non-null promises bytes
+  local_path text null,           -- device-local cache, never sent over the wire
   created_at, updated_at, deleted_at
 )
 

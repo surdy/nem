@@ -17,6 +17,9 @@ class TargetListScreen extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('Targets')),
       floatingActionButton: FloatingActionButton.extended(
+        // See the due list's button: both live in `HomeShell`'s `IndexedStack`
+        // at once, so neither may take the default hero tag.
+        heroTag: 'new-target',
         onPressed: () => Navigator.of(context).push(
           MaterialPageRoute<void>(builder: (_) => const TargetFormScreen()),
         ),

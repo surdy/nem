@@ -224,12 +224,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     required Task task,
     required ScannedCode code,
   }) async {
-    final repository = ref.read(taskRepositoryProvider);
+    final completions = ref.read(taskCompletionsProvider);
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
 
     await HapticFeedback.mediumImpact();
-    final completion = await repository.recordCompletion(
+    final completion = await completions.record(
       task.id,
       source: code.kind.completionSource,
     );
@@ -247,7 +247,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           duration: scanUndoWindow,
           action: SnackBarAction(
             label: 'Undo',
-            onPressed: () => repository.undoCompletion(completion),
+            onPressed: () => completions.undo(completion),
           ),
         ),
       );
@@ -439,15 +439,15 @@ class _ScanTasksSheetState extends ConsumerState<_ScanTasksSheet> {
   final _completed = <String, Completion>{};
 
   Future<void> _toggle(Task task) async {
-    final repository = ref.read(taskRepositoryProvider);
+    final completions = ref.read(taskCompletionsProvider);
     final existing = _completed[task.id];
     if (existing != null) {
-      await repository.undoCompletion(existing);
+      await completions.undo(existing);
       if (mounted) setState(() => _completed.remove(task.id));
       return;
     }
     await HapticFeedback.selectionClick();
-    final completion = await repository.recordCompletion(
+    final completion = await completions.record(
       task.id,
       source: widget.source.kind.completionSource,
     );

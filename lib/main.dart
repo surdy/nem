@@ -29,6 +29,12 @@ Future<void> main() async {
   await container.read(digestNotifierProvider).initialize();
   await container.read(digestSchedulerProvider).refresh();
 
+  // Reminders second, against the same recomputed due dates. Order does not
+  // decide who gets slots — the two budgets are fixed and disjoint, 14 plus 40
+  // of the 64 iOS allows — it only decides which of them sees the other's
+  // notifications already pending on this particular launch.
+  await container.read(reminderSchedulerProvider).refresh();
+
   runApp(
     UncontrolledProviderScope(container: container, child: const NemApp()),
   );

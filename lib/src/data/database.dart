@@ -55,7 +55,13 @@ class Tasks extends Table {
   /// the value is cheap to sort and show, and is recomputed, never trusted.
   DateTimeColumn get lastCompletedAt => dateTime().nullable()();
 
-  /// Wall-clock "HH:mm"; per-task reminders arrive in P4.
+  /// The wall-clock "HH:mm" a task reminds at, null when it has not opted in
+  /// (CONTEXT.md — "Reminder").
+  ///
+  /// Declared in the original scaffold and unused until issue #16, so wiring
+  /// reminders up needed no migration. Read through `ReminderTime.tryParse`,
+  /// which treats an unreadable value as no reminder rather than throwing on
+  /// the launch path.
   TextColumn get reminderTime => text().nullable()();
 
   /// The date a snooze pushed this task out to, or null if it is not snoozed.

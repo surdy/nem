@@ -1,26 +1,21 @@
 import '../domain/digest_schedule.dart';
+import 'notification_permission.dart';
 
-/// Whether the OS will let nem post notifications.
-enum NotificationPermission {
-  /// Never asked. On iOS this is the state in which asking still shows the
-  /// system prompt; once it is [denied] the prompt never appears again.
-  notDetermined,
+export 'notification_permission.dart';
 
-  granted,
-
-  /// Refused, or switched off later in the system settings. The digest still
-  /// schedules — nothing throws — it simply never appears.
-  denied;
-
-  bool get isGranted => this == NotificationPermission.granted;
-}
-
-/// The whole of nem's contact with the platform notification APIs.
+/// The whole of the digest's contact with the platform notification APIs.
 ///
 /// Deliberately a narrow seam. Everything that decides *what* to schedule
 /// lives in `domain/digest_schedule.dart` and is a pure function; everything
 /// that talks to the OS lives behind this interface. That is what lets the
 /// window and budget logic be tested without a plugin, a channel, or a device.
+///
+/// Per-task reminders have their own seam of the same shape
+/// (`reminder_notifier.dart`) rather than sharing this one: they are a
+/// different feature with a different id range and a different budget
+/// (CONTEXT.md keeps "Digest" and "Reminder" apart). The two implementations
+/// happen to drive the same plugin instance, which is what makes
+/// [pendingIds] able to see the other feature's notifications.
 abstract class DigestNotifier {
   /// Prepares the plugin and the time zone database. Safe to call twice.
   Future<void> initialize();

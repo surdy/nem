@@ -50,6 +50,12 @@ class DueListScreen extends ConsumerWidget {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
+        // An explicit tag, because `HomeShell` keeps this screen and the
+        // target list alive together in an `IndexedStack` and both have a
+        // button. Two heroes sharing the default tag in one subtree is an
+        // assertion the moment anything pushes a route over them — which a
+        // tapped reminder does.
+        heroTag: 'new-task',
         onPressed: () => Navigator.of(context).push(
           MaterialPageRoute<void>(builder: (_) => const CreateTaskScreen()),
         ),
@@ -128,9 +134,11 @@ class _TaskTile extends ConsumerWidget {
   /// immediately and the task reschedules at once, because undo is a tombstone
   /// and a recomputation rather than a delayed commit (ADR 0004).
   Future<void> _complete(BuildContext context, WidgetRef ref) async {
-    final repository = ref.read(taskRepositoryProvider);
+    // Through [TaskCompletions] rather than the repository, so the task's
+    // pending reminders go with the completion (CONTEXT.md — "Reminder").
+    final completions = ref.read(taskCompletionsProvider);
     final messenger = ScaffoldMessenger.of(context);
-    final completion = await repository.recordCompletion(task.id);
+    final completion = await completions.record(task.id);
 
     messenger
       ..hideCurrentSnackBar()
@@ -140,7 +148,7 @@ class _TaskTile extends ConsumerWidget {
           duration: _undoWindow,
           action: SnackBarAction(
             label: 'Undo',
-            onPressed: () => repository.undoCompletion(completion),
+            onPressed: () => completions.undo(completion),
           ),
         ),
       );

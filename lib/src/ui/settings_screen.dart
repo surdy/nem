@@ -34,9 +34,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   /// Asks for permission at the moment the user asks for the digest.
   ///
-  /// This is the only place nem prompts. On iOS the system prompt appears
-  /// exactly once in the life of an install, so it is spent here — where the
-  /// user has just said they want notifications — rather than on first launch.
+  /// One of the two places nem prompts; the other is switching on a task's
+  /// reminder, on the task detail screen. On iOS the system prompt appears
+  /// exactly once in the life of an install, so it is spent where the user has
+  /// just said they want notifications rather than on first launch — whichever
+  /// of the two they reach first.
   ///
   /// A refusal does not undo the switch. The digest stays on and schedules as
   /// normal; it simply does not appear until notifications are allowed again,

@@ -8,13 +8,18 @@ import 'package:nem/src/data/database.dart';
 import 'package:nem/src/data/task_repository.dart';
 import 'package:nem/src/domain/fixed_schedule.dart';
 import 'package:nem/src/domain/interval_unit.dart';
+import 'package:nem/src/domain/reminder.dart';
+import 'package:nem/src/notifications/reminder_notifier.dart';
 import 'package:nem/src/ui/due_list_screen.dart';
 import 'package:nem/src/ui/task_detail_screen.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 
+import '../notifications/fake_reminder_notifier.dart';
+
 void main() {
   late NemDatabase db;
   late TaskRepository repository;
+  late FakeReminderNotifier notifier;
   final now = DateTime(2026, 7, 10, 12);
 
   // Fixed schedules resolve against the tz database (ADR 0010).
@@ -23,6 +28,7 @@ void main() {
   setUp(() {
     db = NemDatabase(NativeDatabase.memory());
     repository = TaskRepository(db);
+    notifier = FakeReminderNotifier();
   });
 
   tearDown(() => db.close());
@@ -42,6 +48,7 @@ void main() {
       ProviderScope(
         overrides: [
           databaseProvider.overrideWithValue(db),
+          reminderNotifierProvider.overrideWithValue(notifier),
           nowProvider.overrideWithValue(now),
         ],
         child: MaterialApp(home: TaskDetailScreen(taskId: taskId)),
@@ -56,6 +63,29 @@ void main() {
   Future<void> unmount(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(Duration.zero);
+  }
+
+  /// Runs the time picker's open and close transitions.
+  ///
+  /// Deliberately not `pumpAndSettle`: the dial keeps a frame scheduled for as
+  /// long as it is on screen, so settling never returns and the suite hangs
+  /// rather than fails. Two pumps past the transition are enough to have the
+  /// dialog up, or gone.
+  Future<void> settleDialog(WidgetTester tester) async {
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+  }
+
+  /// What `tasks.reminder_time` holds, read as a one-shot query.
+  ///
+  /// Deliberately not `watchTask(...).first`: a drift *stream* cancelled
+  /// inside `testWidgets` schedules a timer that only a pump can run, so
+  /// awaiting it here hangs the suite instead of failing it.
+  Future<String?> storedReminderTime(String taskId) async {
+    final row = await (db.select(
+      db.tasks,
+    )..where((t) => t.id.equals(taskId))).getSingle();
+    return row.reminderTime;
   }
 
   testWidgets('a task with no completions says so', (tester) async {
@@ -332,5 +362,119 @@ void main() {
     await unmount(tester);
 
     expect((await repository.allTasks()).single.isArchived, isFalse);
+  });
+
+  group('the reminder tile', () {
+    testWidgets('a task starts with its reminder off', (tester) async {
+      await pumpDetail(tester, await weeklyTaskId());
+
+      expect(find.text('Reminder'), findsOneWidget);
+      expect(find.text('Off'), findsOneWidget);
+      expect(find.byTooltip('Turn off reminder'), findsNothing);
+      await unmount(tester);
+    });
+
+    testWidgets('choosing a time opts the task in and schedules it', (
+      tester,
+    ) async {
+      final taskId = await weeklyTaskId();
+      await pumpDetail(tester, taskId);
+
+      // The picker's dial is not worth driving from a test; accepting what it
+      // opens on is enough to exercise the path from tap to pending window.
+      await tester.tap(find.text('Reminder'));
+      await settleDialog(tester);
+      expect(find.text('Reminder time'), findsOneWidget);
+      await tester.tap(find.text('OK'));
+      await settleDialog(tester);
+
+      expect(await storedReminderTime(taskId), '09:00');
+      // The window went to the platform seam, not just to the database.
+      expect(notifier.scheduledTaskIds, {taskId});
+      await unmount(tester);
+    });
+
+    testWidgets('cancelling the picker changes nothing', (tester) async {
+      final taskId = await weeklyTaskId();
+      await pumpDetail(tester, taskId);
+
+      await tester.tap(find.text('Reminder'));
+      await settleDialog(tester);
+      await tester.tap(find.text('Cancel'));
+      await settleDialog(tester);
+
+      expect(await storedReminderTime(taskId), isNull);
+      expect(notifier.scheduled, isEmpty);
+      await unmount(tester);
+    });
+
+    testWidgets('a task that has opted in says when and on what days', (
+      tester,
+    ) async {
+      final taskId = await weeklyTaskId();
+      await repository.setReminderTime(taskId, const ReminderTime(hour: 19));
+
+      await pumpDetail(tester, taskId);
+
+      expect(
+        find.textContaining('on days this task is due or overdue'),
+        findsOneWidget,
+      );
+      expect(find.byTooltip('Turn off reminder'), findsOneWidget);
+      await unmount(tester);
+    });
+
+    testWidgets('turning it off clears the time and the window', (
+      tester,
+    ) async {
+      final taskId = await weeklyTaskId();
+      await repository.setReminderTime(taskId, const ReminderTime(hour: 19));
+      await pumpDetail(tester, taskId);
+
+      await tester.tap(find.byTooltip('Turn off reminder'));
+      await tester.pumpAndSettle();
+
+      expect(await storedReminderTime(taskId), isNull);
+      expect(find.text('Off'), findsOneWidget);
+      expect(notifier.scheduled, isEmpty);
+      await unmount(tester);
+    });
+
+    testWidgets('asks for permission when a reminder is switched on', (
+      tester,
+    ) async {
+      // The digest is not the only thing that needs the OS to say yes, and a
+      // user who never turns the digest on has never been asked.
+      notifier.permissionStatus = NotificationPermission.notDetermined;
+      final taskId = await weeklyTaskId();
+      await pumpDetail(tester, taskId);
+
+      await tester.tap(find.text('Reminder'));
+      await settleDialog(tester);
+      await tester.tap(find.text('OK'));
+      await settleDialog(tester);
+
+      expect(notifier.requestCount, 1);
+      await unmount(tester);
+    });
+
+    testWidgets('a refused permission still stores and schedules', (
+      tester,
+    ) async {
+      notifier
+        ..permissionStatus = NotificationPermission.notDetermined
+        ..permissionAfterRequest = NotificationPermission.denied;
+      final taskId = await weeklyTaskId();
+      await pumpDetail(tester, taskId);
+
+      await tester.tap(find.text('Reminder'));
+      await settleDialog(tester);
+      await tester.tap(find.text('OK'));
+      await settleDialog(tester);
+
+      expect(await storedReminderTime(taskId), '09:00');
+      expect(notifier.scheduled, isNotEmpty);
+      await unmount(tester);
+    });
   });
 }

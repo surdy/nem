@@ -1,12 +1,32 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../notifications/local_reminder_notifier.dart';
 import '../ui/home_shell.dart';
+import '../ui/task_detail_screen.dart';
 import 'clock.dart';
 import 'providers.dart';
 
-/// Lets a digest tap reach the navigator from outside the widget tree.
+/// Lets a tapped notification reach the navigator from outside the widget
+/// tree.
 final nemNavigatorKey = GlobalKey<NavigatorState>();
+
+/// Where a tapped notification should land, decided from its payload.
+///
+/// The two features are told apart here and nowhere else: a reminder carries
+/// the task it is about (CONTEXT.md — "Reminder"), a digest carries no task
+/// because it is about everything at once. Anything unrecognised falls back to
+/// the due list rather than throwing, because this runs inside a platform
+/// callback where a throw goes nowhere useful — and because a payload written
+/// by an older build can still be sitting in the OS's pending queue.
+void showNotificationTarget(String? payload) {
+  final taskId = reminderTaskId(payload);
+  if (taskId == null) {
+    showDueList();
+  } else {
+    showTask(taskId);
+  }
+}
 
 /// Brings the due list forward — what tapping a digest does.
 ///
@@ -15,6 +35,21 @@ final nemNavigatorKey = GlobalKey<NavigatorState>();
 /// the background with, say, the settings screen or the task editor on top.
 void showDueList() =>
     nemNavigatorKey.currentState?.popUntil((route) => route.isFirst);
+
+/// Opens one task — what tapping its reminder does.
+///
+/// Pops back to the due list first, so tapping two reminders in a row leaves
+/// one task screen on the stack rather than a pile of them, and so back from
+/// the task always lands on the due list.
+void showTask(String taskId) {
+  final navigator = nemNavigatorKey.currentState;
+  if (navigator == null) return;
+  navigator
+    ..popUntil((route) => route.isFirst)
+    ..push(
+      MaterialPageRoute<void>(builder: (_) => TaskDetailScreen(taskId: taskId)),
+    );
+}
 
 class NemApp extends ConsumerStatefulWidget {
   const NemApp({super.key});
@@ -42,6 +77,12 @@ class _NemAppState extends ConsumerState<NemApp> {
     // OS can recompute either — so the window is rebuilt from the tasks as they
     // now stand.
     ref.read(digestSchedulerProvider).refresh();
+
+    // And the same for the reminders, for the same reason plus one of their
+    // own: a reminder only stands while its task is still due, and the window
+    // has to be rebuilt against today's due dates rather than the ones that
+    // were true when the app was last open.
+    ref.read(reminderSchedulerProvider).refresh();
 
     // Re-reads the calendar day. The boundary timer that normally moves it does
     // not fire in a suspended process, so an app backgrounded on Monday and

@@ -7,7 +7,9 @@ import 'package:nem/src/domain/due_status.dart';
 import 'package:nem/src/domain/fixed_schedule.dart';
 import 'package:nem/src/domain/interval_unit.dart';
 import 'package:nem/src/domain/reminder.dart';
+import 'package:nem/src/domain/schedule.dart';
 import 'package:nem/src/domain/task.dart';
+import 'package:nem/src/sync/outbox_store.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 
 /// Tuesdays from 6 January 2026, in a zone that is UTC+0 that month — so the
@@ -738,6 +740,283 @@ void main() {
 
       final stored = await repository.watchTask(id).first;
       expect(stored!.reminderTime, isNull);
+    });
+  });
+
+  group('editing a task', () {
+    final now = DateTime(2026, 6, 15, 10);
+
+    /// A task due every 4 days from 1 June, completed on the 5th.
+    Future<Task> completedTask() async {
+      final task = await repository.createFloatingTask(
+        title: 'Replace the water filter',
+        notes: 'under the sink',
+        intervalN: 4,
+        intervalUnit: IntervalUnit.day,
+        startDate: DateTime(2026, 6, 1),
+        now: DateTime(2026, 6, 1, 8),
+      );
+      await repository.recordCompletion(
+        task.id,
+        completedAt: DateTime(2026, 6, 5, 9),
+      );
+      return (await repository.watchTask(task.id).first)!;
+    }
+
+    test('changes the title, notes and target', () async {
+      final target = await TargetRepository(db).createTarget(name: 'The sink');
+      final task = await completedTask();
+
+      final edited = await repository.updateTask(
+        taskId: task.id,
+        title: '  Replace the drinking water filter  ',
+        notes: '  in the cupboard below  ',
+        targetId: target.id,
+        now: now,
+      );
+
+      expect(edited?.title, 'Replace the drinking water filter');
+      expect(edited?.notes, 'in the cupboard below');
+      expect(edited?.targetId, target.id);
+      expect(
+        (await repository.allTasks()).single.title,
+        'Replace the drinking water filter',
+      );
+    });
+
+    test('blanked notes and a cleared target come back null', () async {
+      final target = await TargetRepository(db).createTarget(name: 'The sink');
+      final task = await completedTask();
+      await repository.updateTask(
+        taskId: task.id,
+        title: task.title,
+        notes: 'something',
+        targetId: target.id,
+        now: now,
+      );
+
+      final edited = await repository.updateTask(
+        taskId: task.id,
+        title: task.title,
+        notes: '   ',
+        now: now,
+      );
+
+      expect(edited?.notes, isNull);
+      expect(edited?.targetId, isNull, reason: 'a target can be taken off');
+    });
+
+    test('leaves the schedule alone when none is given', () async {
+      final task = await completedTask();
+
+      final edited = await repository.updateTask(
+        taskId: task.id,
+        title: 'A new name',
+        now: now,
+      );
+
+      expect(edited?.scheduleMode, ScheduleMode.floating);
+      expect(edited?.floatingSchedule?.intervalN, 4);
+      expect(edited?.floatingSchedule?.intervalUnit, IntervalUnit.day);
+      expect(edited?.startDate, DateTime(2026, 6, 1));
+      expect(edited?.dueDate, DateTime(2026, 6, 9, 9));
+    });
+
+    test('a new floating interval is measured from the same last '
+        'completion', () async {
+      final task = await completedTask();
+      expect(task.dueDate, DateTime(2026, 6, 9, 9));
+
+      final edited = await repository.updateTask(
+        taskId: task.id,
+        title: task.title,
+        floatingSchedule: FloatingSchedule(
+          intervalN: 2,
+          intervalUnit: IntervalUnit.day,
+          startDate: DateTime(2026, 6, 1),
+        ),
+        now: now,
+      );
+
+      // Halving the interval makes it overdue against work already done,
+      // rather than starting the clock again from today.
+      expect(edited?.lastCompletedAt, DateTime(2026, 6, 5, 9));
+      expect(edited?.dueDate, DateTime(2026, 6, 7, 9));
+      expect(edited?.dueStatusAt(now), DueStatus.overdue);
+    });
+
+    test('no edit writes, moves or tombstones a completion', () async {
+      final task = await completedTask();
+      final before = await repository.completionsFor(task.id);
+
+      await repository.updateTask(
+        taskId: task.id,
+        title: 'A new name',
+        fixedSchedule: tuesdays(),
+        now: now,
+      );
+
+      final after = await repository.completionsFor(task.id);
+      expect(after.length, before.length);
+      expect(after.single.id, before.single.id);
+      expect(after.single.completedAt, before.single.completedAt);
+    });
+
+    test('switching to fixed leaves the floating columns null', () async {
+      final task = await completedTask();
+
+      final edited = await repository.updateTask(
+        taskId: task.id,
+        title: task.title,
+        fixedSchedule: tuesdays(),
+        now: now,
+      );
+
+      expect(edited?.scheduleMode, ScheduleMode.fixed);
+      expect(edited?.floatingSchedule, isNull);
+      expect(edited?.fixedSchedule?.draft?.frequency, FixedFrequency.weekly);
+      expect(edited?.startDate, DateTime(2026, 1, 6));
+
+      final row = await (db.select(
+        db.tasks,
+      )..where((t) => t.id.equals(task.id))).getSingle();
+      expect(row.intervalN, isNull);
+      expect(row.intervalUnit, isNull);
+      expect(row.rrule, isNotNull);
+    });
+
+    test('switching to floating leaves the rrule null', () async {
+      final task = await repository.createFixedTask(
+        title: 'Put the bins out',
+        schedule: tuesdays(),
+      );
+
+      final edited = await repository.updateTask(
+        taskId: task.id,
+        title: task.title,
+        floatingSchedule: FloatingSchedule(
+          intervalN: 2,
+          intervalUnit: IntervalUnit.week,
+          startDate: DateTime(2026, 6, 1),
+        ),
+        now: now,
+      );
+
+      expect(edited?.scheduleMode, ScheduleMode.floating);
+      expect(edited?.rrule, isNull);
+      expect(edited?.fixedSchedule, isNull);
+      expect(edited?.floatingSchedule?.intervalUnit, IntervalUnit.week);
+      expect(edited?.startDate, DateTime(2026, 6, 1));
+
+      final row = await (db.select(
+        db.tasks,
+      )..where((t) => t.id.equals(task.id))).getSingle();
+      expect(row.rrule, isNull);
+    });
+
+    test('a rule the editor cannot say survives an edit beside it', () async {
+      // The uneditable case (ADR 0006): the form shows the rule as text and
+      // passes no schedule, so nothing here may rewrite it.
+      final task = await repository.createFixedTask(
+        title: 'Pay the quarterly bill',
+        schedule: tuesdays(),
+      );
+      const hand = 'RRULE:FREQ=MONTHLY;BYMONTH=3,6,9,12;BYSETPOS=-1;BYDAY=FR';
+      await db.customStatement('UPDATE tasks SET rrule = ? WHERE id = ?', [
+        hand,
+        task.id,
+      ]);
+
+      final edited = await repository.updateTask(
+        taskId: task.id,
+        title: 'Pay the quarterly water bill',
+        now: now,
+      );
+
+      expect(edited?.title, 'Pay the quarterly water bill');
+      expect(edited?.rrule, hand);
+    });
+
+    test('changing the schedule takes back a snooze', () async {
+      final task = await completedTask();
+      await repository.snoozeTask(
+        task.id,
+        n: 3,
+        unit: IntervalUnit.day,
+        now: now,
+      );
+      expect(
+        (await repository.watchTask(task.id).first)!.isSnoozedAt(now),
+        isTrue,
+      );
+
+      final edited = await repository.updateTask(
+        taskId: task.id,
+        title: task.title,
+        floatingSchedule: FloatingSchedule(
+          intervalN: 10,
+          intervalUnit: IntervalUnit.day,
+          startDate: DateTime(2026, 6, 1),
+        ),
+        now: now,
+      );
+
+      expect(edited?.snoozedUntil, isNull);
+      expect(edited?.snoozedAt, isNull);
+      expect(edited?.isSnoozedAt(now), isFalse);
+      expect(edited?.dueDate, DateTime(2026, 6, 15, 9));
+    });
+
+    test('renaming a snoozed task leaves the snooze alone', () async {
+      final task = await completedTask();
+      await repository.snoozeTask(
+        task.id,
+        n: 3,
+        unit: IntervalUnit.day,
+        now: now,
+      );
+
+      final edited = await repository.updateTask(
+        taskId: task.id,
+        title: 'A new name',
+        now: now,
+      );
+
+      expect(edited?.isSnoozedAt(now), isTrue);
+      expect(edited?.snoozedUntil, isNotNull);
+    });
+
+    test('an edit bumps updated_at and queues the row for push', () async {
+      final task = await completedTask();
+      expect(task.updatedAt, DateTime(2026, 6, 1, 8));
+      final outbox = OutboxStore(db);
+      await outbox.remove('tasks', task.id);
+
+      await repository.updateTask(
+        taskId: task.id,
+        title: 'A new name',
+        now: now,
+      );
+
+      expect((await repository.watchTask(task.id).first)!.updatedAt, now);
+      expect(
+        (await outbox.pending()).map((entry) => entry.rowId),
+        contains(task.id),
+      );
+    });
+
+    test('editing a task that is gone changes nothing', () async {
+      final task = await completedTask();
+      await repository.softDeleteTask(task.id);
+
+      expect(
+        await repository.updateTask(
+          taskId: task.id,
+          title: 'A new name',
+          now: now,
+        ),
+        isNull,
+      );
     });
   });
 }

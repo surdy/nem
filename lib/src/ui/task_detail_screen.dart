@@ -11,6 +11,7 @@ import 'category_chips.dart';
 import 'due_list_screen.dart' show formatDueDate;
 import 'fixed_schedule_editor.dart' show UneditableRule;
 import 'task_actions.dart';
+import 'task_form_screen.dart';
 import 'task_photos.dart';
 
 /// A task and everything its completion log says about it.
@@ -36,6 +37,20 @@ class TaskDetailScreen extends ConsumerWidget {
       appBar: AppBar(
         title: Text(loaded?.title ?? 'Task'),
         actions: [
+          // Its own button rather than another entry in the menu beside it:
+          // that menu is shared with the due list row, where it is the list of
+          // things you can do to a task *without* opening it, and editing is
+          // the opposite of that.
+          if (loaded != null)
+            IconButton(
+              icon: const Icon(Icons.edit_outlined),
+              tooltip: 'Edit task',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => TaskFormScreen(task: loaded),
+                ),
+              ),
+            ),
           // Snooze, archive and their undos live here as well as on the due
           // list row, because this is the only place an archived task can be
           // reached from at all.

@@ -294,6 +294,97 @@ class TaskRepository {
     return task;
   }
 
+  /// Changes what a task *says* — its title, notes, target and schedule.
+  ///
+  /// The counterpart to the two `create` methods above, and deliberately one
+  /// method rather than their mirror image. Creating has to know which mode it
+  /// is making, because there is no row yet; editing does not, because the row
+  /// already has a mode and most edits — a fixed typo, a target finally created
+  /// — leave it alone.
+  ///
+  /// So the schedule is optional here. Passing neither [floatingSchedule] nor
+  /// [fixedSchedule] leaves every schedule column exactly as it was, which is
+  /// what lets a rule this build cannot parse survive an edit of the title
+  /// beside it (ADR 0006): the editor refuses to show such a rule, and what it
+  /// cannot show it must not overwrite.
+  ///
+  /// Passing one switches the task to that mode and nulls the other's columns,
+  /// so the two representations stay mutually exclusive (ADR 0005) rather than
+  /// leaving an abandoned `rrule` behind for a later read to trip over.
+  ///
+  /// Nothing in the completion log is touched. A schedule is a rule about work
+  /// still to come, and rewriting it says nothing about the work already done —
+  /// which is the whole reason this exists rather than delete-and-recreate.
+  /// The derived caches are recomputed from that untouched log against the new
+  /// rule, so a task whose interval just halved is immediately overdue if its
+  /// last completion says so.
+  ///
+  /// Returns the updated task, or null if there is no such live task.
+  Future<Task?> updateTask({
+    required String taskId,
+    required String title,
+    String? notes,
+    String? targetId,
+    FloatingSchedule? floatingSchedule,
+    FixedSchedule? fixedSchedule,
+    DateTime? now,
+  }) async {
+    assert(
+      floatingSchedule == null || fixedSchedule == null,
+      'A task has one schedule, not both (ADR 0005)',
+    );
+    final timestamp = now ?? DateTime.now();
+    final existing = await _liveTask(taskId);
+    if (existing == null) return null;
+
+    final trimmedNotes = notes?.trim();
+    var companion = TasksCompanion(
+      title: Value(title.trim()),
+      notes: Value(
+        (trimmedNotes == null || trimmedNotes.isEmpty) ? null : trimmedNotes,
+      ),
+      targetId: Value(targetId),
+      updatedAt: Value(timestamp),
+    );
+
+    if (floatingSchedule != null) {
+      companion = companion.copyWith(
+        scheduleMode: const Value(ScheduleMode.floating),
+        intervalN: Value(floatingSchedule.intervalN),
+        intervalUnit: Value(floatingSchedule.intervalUnit),
+        rrule: const Value(null),
+        startDate: Value(floatingSchedule.startDate),
+      );
+    } else if (fixedSchedule != null) {
+      companion = companion.copyWith(
+        scheduleMode: const Value(ScheduleMode.fixed),
+        rrule: Value(fixedSchedule.encode()),
+        intervalN: const Value(null),
+        intervalUnit: const Value(null),
+        startDate: Value(fixedSchedule.anchor),
+      );
+    }
+
+    // A snooze is a decision about a due date this edit has just redefined —
+    // "not this Tuesday" means nothing once Tuesday is no longer when the work
+    // falls. Taken back only when the schedule actually moved, so renaming a
+    // snoozed task does not quietly drag it back onto the due list.
+    final scheduleChanged = floatingSchedule != null || fixedSchedule != null;
+    if (scheduleChanged && existing.snoozedUntil != null) {
+      companion = companion.copyWith(
+        snoozedUntil: const Value(null),
+        snoozedAt: const Value(null),
+      );
+    }
+
+    await (_db.update(_db.tasks)
+          ..where((t) => t.id.equals(taskId) & t.deletedAt.isNull()))
+        .write(companion);
+    await _outbox.enqueue(_db.tasks.actualTableName, taskId, now: timestamp);
+    await _refreshDerivedState(taskId);
+    return _liveTask(taskId);
+  }
+
   /// Opts a task into a reminder at [time], or out of one when [time] is null
   /// (CONTEXT.md — "Reminder").
   ///

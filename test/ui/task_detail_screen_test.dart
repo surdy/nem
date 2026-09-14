@@ -602,4 +602,51 @@ void main() {
       await unmount(tester);
     });
   });
+
+  group('editing', () {
+    /// The form is taller than the default test viewport, so its save button
+    /// would sit below the fold. Give these tests a tall window rather than
+    /// scrolling before every tap, as `task_form_screen_test.dart` does.
+    void tallWindow(WidgetTester tester) {
+      tester.view.physicalSize = const Size(800, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+    }
+
+    testWidgets('the edit button opens the form on this task', (tester) async {
+      tallWindow(tester);
+      final taskId = await weeklyTaskId();
+      await pumpDetail(tester, taskId);
+
+      await tester.tap(find.byTooltip('Edit task'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Edit task'), findsOneWidget);
+      expect(find.text('Save changes'), findsOneWidget);
+      // Opened on this task rather than on a blank form.
+      expect(find.widgetWithText(TextFormField, '7'), findsOneWidget);
+      await unmount(tester);
+    });
+
+    testWidgets('a title saved there is the title shown here', (tester) async {
+      tallWindow(tester);
+      final taskId = await weeklyTaskId();
+      await pumpDetail(tester, taskId);
+
+      await tester.tap(find.byTooltip('Edit task'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextFormField).first,
+        'Replace the drinking filter',
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save changes'));
+      await tester.pumpAndSettle();
+
+      // Back on the detail screen, which reads the task live.
+      expect(find.text('Save changes'), findsNothing);
+      expect(find.text('Replace the drinking filter'), findsOneWidget);
+      await unmount(tester);
+    });
+  });
 }

@@ -8,7 +8,7 @@ import '../domain/due_status.dart';
 import '../domain/task.dart';
 import 'archived_tasks_screen.dart';
 import 'category_chips.dart';
-import 'create_task_screen.dart';
+import 'task_form_screen.dart';
 import 'scan_screen.dart';
 import 'settings_screen.dart';
 import 'task_actions.dart';
@@ -95,9 +95,9 @@ class DueListScreen extends ConsumerWidget {
         // assertion the moment anything pushes a route over them — which a
         // tapped reminder does.
         heroTag: 'new-task',
-        onPressed: () => Navigator.of(context).push(
-          MaterialPageRoute<void>(builder: (_) => const CreateTaskScreen()),
-        ),
+        onPressed: () => Navigator.of(
+          context,
+        ).push(MaterialPageRoute<void>(builder: (_) => const TaskFormScreen())),
         icon: const Icon(Icons.add),
         label: const Text('New task'),
       ),
